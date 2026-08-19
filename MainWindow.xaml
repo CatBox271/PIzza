@@ -1,0 +1,587 @@
+﻿<Window x:Class="PiWpfUi.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:PiWpfUi"
+        xmlns:sys="clr-namespace:System;assembly=System.Runtime"
+        mc:Ignorable="d"
+        Title="MainWindow" Height="1080" Width="1960" PreviewMouseMove="Window_PreviewMouseMove">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <local:TextLineCounter x:Key="TextLineCounter"/>
+        <local:TextBoxTrimmer x:Key="TextBoxTrimmer"/>
+        <local:TextBoxLineLimiter x:Key="TextBoxLineLimiter"/>
+        <x:Array x:Key="SessionTest" Type="{x:Type local:SessionItem}">
+            <local:SessionItem Name="新建对话"/>
+            <local:SessionItem Name="乱码修复"/>
+        </x:Array>
+        <x:Array x:Key="TitileTest" Type="{x:Type local:MonoPage}">
+            <local:MonoPage title="主对话" focus="True"/>
+            <local:MonoPage title="Text"/>
+            <local:MonoPage title="Picture"/>
+        </x:Array>
+        <x:Array x:Key="MessageTest" Type="{x:Type local:BasicMessageItem}">
+            <local:BasicMessageItem Text="你好" Role="user"/>
+            <local:BasicMessageItem Text="你好,很高兴见到你。我是一个智能AI，我可以聊天、写作、编程或是做你的智能助手。我是一个智能AI，我可以聊天、写作、编程或是做你的智能助手。" Role="assistant" Reasoning="The user says 快一点回答我 which means Answer me quickly in Chinese. They want a fast response. There's no actual question here, just a request for speed. I should respond quickly and briefly."/>
+            <local:BasicMessageItem Text="有Text没有Reasoning自动把【显示思考】隐藏" Role="assistant"/>
+            <local:BasicMessageItem Role="assistant">
+                <local:BasicMessageItem.Tools>
+                    <local:ToolItem tool_name="bash" tool_exec="echo Hello" tool_result="error"/>
+                </local:BasicMessageItem.Tools>
+            </local:BasicMessageItem>
+        </x:Array>
+        <!--可复制文本-->
+        <Style x:Key="MessageTextBox" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <!--无框按钮-->
+        <Style x:Key="NoOutLineButton" TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.ControlBrushKey}}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!--消息模版-->
+        <DataTemplate x:Key="BasicMessage">
+            <DockPanel x:Name="Root" HorizontalAlignment="Right">
+                <DockPanel>
+                    <DockPanel x:Name="Avatar" DockPanel.Dock="Right">
+                        <Border DockPanel.Dock="Top" Width="90">
+                            <Border VerticalAlignment="Bottom" Background="Gray" Width="70" Height="70" Margin="10"/>
+                        </Border>
+                        <Border/>
+                    </DockPanel>
+                    <!-- 仅限Assistant -->
+                    <DockPanel x:Name="ThinkingLab" DockPanel.Dock="Top">
+                        <Border DockPanel.Dock="Bottom" Background="Beige">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsChecked, ElementName=ThinkingToggle}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBox Text="{Binding Reasoning}" Style="{StaticResource MessageTextBox}" FontSize="20" Width="1180" Foreground="#888888" Margin="10"/>
+                        </Border>
+                        <Border DockPanel.Dock="Left" Margin="0,0,0,0">
+                            <ToggleButton x:Name="ThinkingToggle" Foreground="Gray" FontSize="20" Margin="5">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                                <ToggleButton.Style>
+                                    <Style TargetType="ToggleButton">
+                                        <Setter Property="Content" Value="显示思考"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsChecked, ElementName=ThinkingToggle}" Value="True">
+                                                <Setter Property="Content" Value="隐藏思考"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ToggleButton.Style>
+                            </ToggleButton>
+                        </Border>
+                        <Border/>
+                        <DockPanel.Style>
+                            <Style TargetType="DockPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Role}" Value="assistant">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Reasoning}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DockPanel.Style>
+                    </DockPanel>
+
+                    <!-- Tool -->
+                    <DockPanel DockPanel.Dock="Bottom">
+                        <ItemsControl ItemsSource="{Binding Tools}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <!--单个Tool-->
+                                    <Border Background="#EEE" Margin="0,5,0,0" CornerRadius="4" Padding="8" MaxWidth="1200" TextElement.FontSize="18">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBox Text="{Binding tool_name}" FontWeight="Bold" Style="{StaticResource MessageTextBox}"/>
+                                                <TextBox x:Name="ToolExecBox" Foreground="#666" Margin="10,0,5,0" MaxWidth ="1100" Style="{StaticResource MessageTextBox}" TextWrapping="NoWrap">
+                                                    <TextBox.Text>
+                                                        <MultiBinding Converter="{StaticResource TextBoxTrimmer}">
+                                                            <Binding Path="." RelativeSource="{RelativeSource Self}"/>
+                                                            <Binding Path="tool_exec"/>
+                                                            <Binding Path="." ElementName="ToolExecButton"/>
+                                                        </MultiBinding>
+                                                    </TextBox.Text>
+                                                </TextBox>
+                                                <Button x:Name="ToolExecButton" Height="20" Foreground="#888" Click="ToolExec_Click">
+                                                    <Button.Template>
+                                                        <ControlTemplate>
+                                                            <ContentControl Content="•••"/>
+                                                        </ControlTemplate>
+                                                    </Button.Template>
+                                                </Button>
+                                            </StackPanel>
+                                            <TextBox x:Name="ToolResultBox" Foreground="#AAA" MaxWidth="1180" Style="{StaticResource MessageTextBox}">
+                                                <TextBox.Text>
+                                                    <MultiBinding Converter="{StaticResource TextBoxLineLimiter}">
+                                                        <Binding Path="." RelativeSource="{RelativeSource Self}"/>
+                                                        <Binding Path="tool_result"/>
+                                                        <Binding Path="." ElementName="ToolResultButton"/>
+                                                    </MultiBinding>
+                                                </TextBox.Text>
+                                            </TextBox>
+                                            <Button x:Name="ToolResultButton" Height="20" Foreground="#AAA" Click="ToolResult_Click">
+                                                <Button.Template>
+                                                    <ControlTemplate>
+                                                        <ContentControl Content="--------------------------------------------------------------------点击查看全部--------------------------------------------------------------------"/>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                            </Button>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </DockPanel>
+
+                    <Border DockPanel.Dock="Bottom" Width="1200" Height="36" Background="LightGreen" Margin="0">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                    </Border>
+                    <Border x:Name="Message" DockPanel.Dock="Right" Background="Gray">
+                        <TextBox Text="{Binding Text}"
+                            IsReadOnly="True"
+                            BorderThickness="0"
+                            Background="Transparent"
+                            TextWrapping="Wrap"
+                            FontSize="20"
+                            Margin="10"
+                            MaxWidth="1180">
+                            <TextBox.Width>
+                                <MultiBinding Converter="{StaticResource TextLineCounter}">
+                                    <Binding Path="." RelativeSource="{RelativeSource Self}"/>
+                                    <Binding Path="Text" RelativeSource="{RelativeSource Self}"/>
+                                </MultiBinding>
+                            </TextBox.Width>
+                        </TextBox>
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                    </Border>
+
+                    <Border/>
+                </DockPanel>
+            </DockPanel>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Role}" Value="assistant">
+                    <Setter TargetName="Root" Property="HorizontalAlignment" Value="Left"/>
+                    <Setter TargetName="Avatar" Property="DockPanel.Dock" Value="Left"/>
+                    <Setter TargetName="Message" Property="DockPanel.Dock" Value="Left"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Role}" Value="toolResult">
+                    <Setter TargetName="Root" Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Role}" Value="Spacer">
+                    <Setter TargetName="Root" Property="Height" Value="200"/>
+                    <Setter TargetName="Root" Property="Visibility" Value="Hidden"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+        <Style x:Key="PortBorderStyle" TargetType="Border">
+            <Setter Property="Height" Value="10"/>
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="Margin" Value="0,5"/>
+        </Style>
+        <DataTemplate x:Key="BasicCheese">
+            <DockPanel Background="Beige" MinWidth="150" HorizontalAlignment="Center" VerticalAlignment="Center" LastChildFill="True">
+                <!--名字（顶部作为拖拽区域）-->
+                <Border DockPanel.Dock="Top" Height="20" Background="#DDD" MouseLeftButtonDown="CheeseNameBar_MouseLeftButtonDown" MouseMove="CheeseNameBar_MouseMove" MouseLeftButtonUp="CheeseNameBar_MouseLeftButtonUp">
+                    <TextBox Text="{Binding Name}" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" IsReadOnly="True" IsHitTestVisible="False" Focusable="False"/>
+                </Border>
+                <!--左侧Input：每个Key一个红口，Key显示在口右边（节点内部）-->
+                <ItemsControl DockPanel.Dock="Left" ItemsSource="{Binding Input}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Style="{StaticResource PortBorderStyle}" Background="Red" Tag="{Binding Key}" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}" MouseLeftButtonDown="InputPort_MouseLeftButtonDown" MouseMove="InputPort_MouseMove" MouseLeftButtonUp="InputPort_MouseLeftButtonUp"/>
+                                <TextBlock Text="{Binding Key}" FontSize="10" VerticalAlignment="Center" Margin="2,0" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <!--右侧Output：每个Key一个绿口，Key显示在口左边（节点内部）-->
+                <ItemsControl DockPanel.Dock="Right" ItemsSource="{Binding Output}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <TextBlock Text="{Binding Key}" FontSize="10" VerticalAlignment="Center" Margin="2,0" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}"/>
+                                <Border Style="{StaticResource PortBorderStyle}" Background="Green" Tag="{Binding Key}" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}" MouseLeftButtonDown="OutputPort_MouseLeftButtonDown" MouseMove="OutputPort_MouseMove" MouseLeftButtonUp="OutputPort_MouseLeftButtonUp"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <!--内容区：参数列表（竖排，按 CheeseParaType 显示对应编辑器）-->
+                <ItemsControl DockPanel.Dock="Top" ItemsSource="{Binding Parameter.Values}" Margin="6,2">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,1" ToolTip="{Binding Description}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{Binding Name}" MinWidth="52" MaxWidth="96" FontSize="11" Foreground="#444" VerticalAlignment="Center" Margin="0,0,4,0" TextTrimming="CharacterEllipsis"/>
+                                <TextBox Grid.Column="1" MinWidth="88" FontSize="11" Text="{Binding String, UpdateSourceTrigger=LostFocus, TargetNullValue='', NotifyOnSourceUpdated=True}" KeyDown="ParameterEditor_KeyDown" SourceUpdated="ParameterEditor_SourceUpdated">
+                                    <TextBox.Style>
+                                        <Style TargetType="TextBox">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="{x:Static local:CheeseParaType.String}">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBox.Style>
+                                </TextBox>
+                                <TextBox Grid.Column="1" MinWidth="88" FontSize="11" Text="{Binding Int, UpdateSourceTrigger=LostFocus, TargetNullValue='', NotifyOnSourceUpdated=True}" KeyDown="ParameterEditor_KeyDown" SourceUpdated="ParameterEditor_SourceUpdated">
+                                    <TextBox.Style>
+                                        <Style TargetType="TextBox">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="{x:Static local:CheeseParaType.Int}">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBox.Style>
+                                </TextBox>
+                                <TextBox Grid.Column="1" MinWidth="88" FontSize="11" Text="{Binding Float, UpdateSourceTrigger=LostFocus, TargetNullValue='', NotifyOnSourceUpdated=True}" KeyDown="ParameterEditor_KeyDown" SourceUpdated="ParameterEditor_SourceUpdated">
+                                    <TextBox.Style>
+                                        <Style TargetType="TextBox">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="{x:Static local:CheeseParaType.Float}">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBox.Style>
+                                </TextBox>
+                                <CheckBox Grid.Column="1" VerticalAlignment="Center" IsChecked="{Binding Bool, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, NotifyOnSourceUpdated=True}" SourceUpdated="ParameterEditor_SourceUpdated">
+                                    <CheckBox.Style>
+                                        <Style TargetType="CheckBox">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Type}" Value="{x:Static local:CheeseParaType.Bool}">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </CheckBox.Style>
+                                </CheckBox>
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <!--必需填充元素-->
+                <Border/>
+            </DockPanel>
+
+        </DataTemplate>
+    </Window.Resources>
+
+    
+    <Grid>
+        <!--设置页面-->
+        <DockPanel>
+            
+        </DockPanel>
+        <!--全部页面-->
+        <DockPanel>
+            <!--侧边栏-->
+            <DockPanel DockPanel.Dock="Left" Width="300" Background="Red">
+                <Border DockPanel.Dock="Bottom" Height="70">
+
+                </Border>
+                <!--会话选择-->
+                <ListBox x:Name="SessionList" SelectionChanged="SessionList_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled" d:ItemsSource="{StaticResource SessionTest}">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" FontSize="15" Width="40" Height="40" Click="SessionMore_Click">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                    <Setter Property="Content" Value="•••"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                    <Button.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="重命名" Click="SessionRename_Click"/>
+                                            <Separator/>
+                                            <MenuItem Header="回收"/>
+                                        </ContextMenu>
+                                    </Button.ContextMenu>
+                                </Button>
+                                <TextBox VerticalAlignment="Center" IsReadOnly="True" Focusable="False" FontSize="25"  Cursor="Arrow" LostFocus="SessionRenameSubmit" Background="Transparent" BorderThickness="0" KeyDown="SessionNameTextBox_KeyDown">
+                                    <TextBox.Text>
+                                        <MultiBinding Converter="{StaticResource TextBoxTrimmer}">
+                                            <Binding Path="." RelativeSource="{RelativeSource Self}"/>
+                                            <Binding Path="Name"/>
+                                            <Binding Path="." ElementName="ToolExecButton"/>
+                                            <!--没有不影响-->
+                                        </MultiBinding>
+                                    </TextBox.Text>
+                                </TextBox>
+                            </DockPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+            </DockPanel>
+            <!--顶栏-->
+            <Border DockPanel.Dock="Top" Height="60" Background="#0D3">
+                <ListBox x:Name="PageTabBar"
+                     d:ItemsSource="{StaticResource TitileTest}"
+                     SelectionChanged="PageTab_SelectionChanged"
+                     Background="Transparent"
+                     BorderThickness="0">
+                    <ListBox.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid x:Name="Title" Width="100">
+                                <TextBlock Text="{Binding title}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="5">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="Black"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding focus}" Value="true">
+                                                    <Setter Property="Foreground" Value="White"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                                <Button Width="20" Height="20" Background="White" Foreground="Black" Cursor="Hand" HorizontalAlignment="Right" VerticalAlignment="Top" Click="PageClose_Click">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border Background="{TemplateBinding Background}">
+                                                <Path Data="M 5,5 L 15,15 M 15,5 L 5,15"
+                      Stroke="{TemplateBinding Foreground}"
+                      StrokeThickness="2"
+                      StrokeStartLineCap="Round"
+                      StrokeEndLineCap="Round"/>
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Grid}}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding focus}" Value="true">
+                                                <Setter Property="Background" Value="Green"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
+            </Border>
+            <!--配置栏-->
+            <DockPanel DockPanel.Dock ="Bottom"  Height="70" Background="Yellow">
+                <Border>
+                    <TextBlock x:Name="StatusBar" Text="" FontSize="20" Foreground="#333333" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+            </DockPanel>
+            <!--输入栏-->
+            <Border DockPanel.Dock ="Bottom">
+                <Grid Margin="10,10">
+                    <TextBox x:Name="ChatInput" FontSize="24" PreviewKeyDown="ChatInputTextBox_KeyDown"
+                             AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                             MaxWidth="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=Grid}}"/>
+                    <TextBlock FontSize="24" Foreground="DimGray" IsHitTestVisible="False" Margin="6,0,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value=""/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text.Length, ElementName=ChatInput}" Value="0">
+                                        <Setter Property="Text" Value="和PIzza饼说话"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+            </Border>
+            <!--内容区-->
+            <Border Background="#DDD">
+                <Grid>
+                    <ListBox x:Name="MessageList" ItemTemplate="{StaticResource BasicMessage}" d:ItemsSource="{StaticResource MessageTest}" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel" VirtualizingPanel.CacheLength="2" VirtualizingPanel.CacheLengthUnit="Page">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                    <TextBox x:Name="TextPageView" Visibility="Collapsed" TextWrapping="Wrap" FontSize="20" Margin="10" Background="Transparent" BorderThickness="0" IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+                    <DockPanel x:Name="PIzzaPage" Visibility="Visible" >
+                        <!--右侧积木区-->
+                        <DockPanel x:Name="CheeseDeleteZone" DockPanel.Dock="Right" Background="#ffd5a0" Width="300">
+                            <StackPanel Margin="10">
+                                <Button Content="加测试积木" Click="AddTestCheese_Click"/>
+                                <TextBlock Text="Cheese 模板" Margin="0,12,0,4" FontWeight="Bold" Foreground="#333"/>
+                                <ItemsControl ItemsSource="{x:Static local:CheeseTemplate.Display}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="Beige" BorderBrush="#888" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,3" Cursor="Hand" ToolTip="点击添加到画布" MouseLeftButtonUp="CheeseTemplateDisplay_Click">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" FontWeight="Bold" Foreground="#222"/>
+                                                    <TextBlock FontSize="10" Foreground="#666">
+                                                        <TextBlock.Text>
+                                                            <MultiBinding StringFormat="{}Wait:{0}  Work:{1}  Out:{2}">
+                                                                <Binding Path="WaitType"/>
+                                                                <Binding Path="WorkType"/>
+                                                                <Binding Path="OutType"/>
+                                                            </MultiBinding>
+                                                        </TextBlock.Text>
+                                                    </TextBlock>
+                                                    <TextBlock FontSize="10" Foreground="#666" Text="{Binding Parameter.Count, StringFormat=参数 {0} 个}"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock x:Name="CheeseDeleteHint" Text="拖到这里删除" Margin="0,12,0,0" HorizontalAlignment="Center" Foreground="#884444"/>
+                            </StackPanel>
+                        </DockPanel>
+                        <!--顶部操作区-->
+                        <StackPanel DockPanel.Dock="Top" Height="32" Background="#ffbb00" Orientation="Horizontal">
+                            <Button Content="  重置  " Click="ResetPizzaGraph_Click" Margin="5,0"/>
+                            <Button Content="  撤回  " Click="UndoPizzaGraph_Click" Margin="5,0"/>
+                            <Button Content="  重做  " Click="RedoPizzaGraph_Click" Margin="5,0"/>
+                        </StackPanel>
+                        <!--中部pizza-->
+                        <Grid>
+                            <ItemsControl x:Name="CheeseCanvas" ItemTemplate="{StaticResource BasicCheese}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas Background="#a86"/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                        <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                            </ItemsControl>
+                            <ItemsControl x:Name="ConnectionLines" IsHitTestVisible="False">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas/>
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}" Stroke="#333" StrokeThickness="2" Opacity="{Binding Opacity}" IsHitTestVisible="False"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Canvas x:Name="ConnectionLayer" IsHitTestVisible="False">
+                                <Line x:Name="TempConnectionLine" Stroke="#333" StrokeThickness="2" StrokeDashArray="2,2" Visibility="Collapsed" IsHitTestVisible="False"/>
+                                <Border x:Name="PortHoverHighlight" Width="16" Height="16" CornerRadius="3" Background="#40FFD700" BorderBrush="#FFFFD700" BorderThickness="2" Visibility="Collapsed" IsHitTestVisible="False"/>
+                            </Canvas>
+                        </Grid>
+                    </DockPanel>
+                </Grid>
+            </Border>
+        </DockPanel>
+    </Grid>
+</Window>
