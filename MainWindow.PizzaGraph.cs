@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
-using System.Windows.Data;
 using System.ComponentModel;
 using System.Data;
 using System.Diagnostics;
@@ -16,6 +15,7 @@ using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -208,6 +208,12 @@ namespace PiWpfUi
             // 只挂回调；Parameter 的对象初始化器在构造函数之后才执行，这里扫描会扫到空集合
             WhileImportChange += _DoWait;
             AttachParameterDictionary(_parameter);
+        }
+
+        public bool GetNormalPortCache(bool input, string port, out List<string>? cache)
+        {
+            if (!GetPortCache(input, port, out cache) || cache!.Count == 0) return false;
+            return true;
         }
 
         #region port
@@ -474,8 +480,8 @@ namespace PiWpfUi
 
         private bool WorkUserMessage()
         {
-            if(!GetPortCache(true,"user_input",out var result) || result!.Count == 0) return false;
-            PortAdd(false, "content", result);
+            if(!GetNormalPortCache(true, "user_input", out var result)) return false;
+            PortAdd(false, "content", result!);
             PortClear(true, "user_input");
             return true;
         }
@@ -501,14 +507,14 @@ namespace PiWpfUi
         private bool WorkMerge()
         {
             // 1. content 先进入缓冲
-            if (GetPortCache(true, "content", out var content) && content != null && content.Count > 0)
+            if (GetNormalPortCache(true, "content", out var content))
             {
-                AddWorkDraft(content, merge_buffer_key);
+                AddWorkDraft(content!, merge_buffer_key);
                 PortClear(true, "content");
             }
 
             // 2. finish 信号触发输出
-            if (GetPortCache(true, "finish", out var finish) && finish != null && finish.Count > 0)
+            if (GetNormalPortCache(true, "finish", out var finish))
             {
                 PortClear(true, "finish");
 
@@ -530,9 +536,9 @@ namespace PiWpfUi
 
         private bool WorkTestPopup()
         {
-            if (!GetPortCache(true, "input", out var input) || input == null || input.Count == 0) return false;
+            if (!GetNormalPortCache(true, "input", out var input)) return false;
 
-            string text = string.Join(Environment.NewLine, input);
+            string text = string.Join(Environment.NewLine, input!);
             PortClear(true, "input");
 
             var main = MainWindow.Instance;
@@ -559,15 +565,15 @@ namespace PiWpfUi
 
             var items = new List<string>();
 
-            if (GetPortCache(true, "stream_result", out var stream) && stream != null && stream.Count > 0)
+            if (GetNormalPortCache(true, "stream_result", out var stream))
             {
-                items.AddRange(stream);
+                items.AddRange(stream!);
                 PortClear(true, "stream_result");
             }
 
-            if (GetPortCache(true, "result", out var result) && result != null && result.Count > 0)
+            if (GetNormalPortCache(true, "result", out var result))
             {
-                items.AddRange(result);
+                items.AddRange(result!);
                 PortClear(true, "result");
             }
 
@@ -587,13 +593,13 @@ namespace PiWpfUi
         //一直循环到结束
         private bool WorkAgentStream()
         {
-            if (!GetPortCache(true, "content", out var result) || result!.Count == 0) return false;
+            if (!GetNormalPortCache(true, "content", out var result)) return false;
             if (GetWorkDraft(out var draft) && draft!.Count != 0)
             {
                 //还需要实际看一下有没有PI的后台，如果没有就放行
                 if (!MainWindow.Instance.PIAgent.TryGetValue(MainWindow.Instance.GetSessionId(Bread!.sessionPath), out var client) || client == null) return false;
             }
-            AddWorkDraft(result);
+            AddWorkDraft(result!);
             PortClear(true,"content");
 
             _ = AgentStreamAsync();
@@ -619,26 +625,28 @@ namespace PiWpfUi
             try
             {
                 await client.process!.StandardInput.WriteLineAsync(main.GetProcessExecChatInput(builder.ToString()));
-                //现在主要是怎么实现接受；TestGetAllInfo 遇到 agent_settled 会返回
-                await main.TestGetAllInfo(client, Bread.sessionPath);
 
-                // 这一轮结束：把 PI 的完整会话文件同步回 PIzza 自己的会话文件
-                var piFile = main.FindPiSessionFilePath(main.GetSessionId(Bread.sessionPath));
-                if (!string.IsNullOrWhiteSpace(piFile) && File.Exists(piFile))
+                string? line;
+                while (true)
                 {
-                    File.Copy(piFile, Bread.sessionPath, true);
+                    line = await client.process!.StandardOutput.ReadLineAsync();
+                    if (MainWindow.AnalysisPISettled(line)) break;
+                    PortAdd(false, "stream", line!);//AnalysisPISettled后不可能为null
+                    DoOut();   // 触发下游加热/传递
                 }
-
-                ClearWorkDraft();
                 PortAdd(false, "finish", "true");
                 DoOut();
+
+                ClearWorkDraft();
             }
             catch (Exception e)
             {
                 MessageBox.Show(e.ToString());
-                ClearWorkDraft();
+
                 PortAdd(false, "finish", "false");
                 DoOut();
+
+                ClearWorkDraft();
             }
         }
         #endregion
