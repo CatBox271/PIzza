@@ -297,6 +297,409 @@ public partial class MainWindow
         }
     }
 
+    // ===== Cheese 流式消息处理（WorkMessageDisplay 专用） =====
+
+    /// <summary>
+    /// 逐行处理 stream_result 里的原始 PI JSON：分析 + 落盘；UI 刷新是副作用，仅当前会话做。
+    /// </summary>
+    public void HandleCheeseStreamLine(string? filePath, string line)
+    {
+        var sm = MainWindow.AnalysisPIStream(line);
+        if (sm == null || sm.type == null) return;
+
+        switch (sm.type.Value)
+        {
+            case StreamMessage.Type.MessageStart:
+                if (sm.role == "user" || sm.role == "assistant")
+                {
+                    CheeseStreamMessageStart(filePath, sm.role, sm.text ?? "");
+                }
+                break;
+
+            case StreamMessage.Type.ThinkingDelta:
+                CheeseStreamThinkingDelta(filePath, sm.text ?? "");
+                break;
+
+            case StreamMessage.Type.MessageDelta:
+                CheeseStreamMessageDelta(filePath, sm.text ?? "");
+                break;
+
+            case StreamMessage.Type.ToolCallEnd:
+                CheeseStreamToolCallEnd(filePath, sm.tool_id ?? "", sm.tool_name ?? "", sm.tool_exec ?? "");
+                break;
+
+            case StreamMessage.Type.ToolResult:
+                CheeseStreamToolResult(filePath, sm.tool_id ?? "", sm.tool_name ?? "", sm.tool_result ?? "", sm.isError);
+                break;
+
+            case StreamMessage.Type.Settled:
+            case StreamMessage.Type.Error:
+            default:
+                // agent_settled 不会送到这里；Error / 非 JSON 忽略
+                break;
+        }
+    }
+
+    private List<MonoMessage>? GetOrCreateCheeseMessages(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || filePath == DefaultOfLastSessionPath) return null;
+
+        var cache = MessageManager.Instance.MessagesCache;
+        if (!cache.TryGetValue(filePath, out var list) || list == null)
+        {
+            list = MessageManager.Instance.GetMessages(filePath, true) ?? new List<MonoMessage>();
+            cache[filePath] = list;
+        }
+        return list;
+    }
+
+    private void CheeseStreamMessageStart(string? filePath, string role, string text)
+    {
+        var list = GetOrCreateCheeseMessages(filePath);
+        if (list == null) return;
+
+        var msg = new MonoMessage { role = role };
+        msg.ApplyTextBuilder(text);
+        list.Add(msg);
+
+        if (role == "assistant")
+        {
+            AppendPizzaConversationStreaming(filePath, msg);
+        }
+        else
+        {
+            AppendPizzaConversationMessage(filePath, msg);
+        }
+        DisplayCheeseStreamMessageStart(filePath, msg, list.Count - 1);
+    }
+
+    private void CheeseStreamThinkingDelta(string? filePath, string delta)
+    {
+        var list = GetOrCreateCheeseMessages(filePath);
+        if (list == null || list.Count == 0) return;
+
+        var msg = list[^1];
+        msg.ApplyReasoningBuilder(delta);
+
+        UpdatePizzaConversationStreaming(filePath, msg);
+        DisplayCheeseStreamMessage(filePath, msg, list.Count - 1);
+    }
+
+    private void CheeseStreamMessageDelta(string? filePath, string delta)
+    {
+        var list = GetOrCreateCheeseMessages(filePath);
+        if (list == null || list.Count == 0) return;
+
+        var msg = list[^1];
+        msg.ApplyTextBuilder(delta);
+
+        UpdatePizzaConversationStreaming(filePath, msg);
+        DisplayCheeseStreamMessage(filePath, msg, list.Count - 1);
+    }
+
+    private void CheeseStreamToolCallEnd(string? filePath, string toolId, string toolName, string toolExec)
+    {
+        var list = GetOrCreateCheeseMessages(filePath);
+        if (list == null || list.Count == 0) return;
+
+        var msg = list[^1];
+        msg.AddTool(toolId, toolName, toolExec, null, null);
+
+        UpdatePizzaConversationStreaming(filePath, msg);
+        DisplayCheeseStreamMessage(filePath, msg, list.Count - 1);
+    }
+
+    private void CheeseStreamToolResult(string? filePath, string toolId, string toolName, string toolResult, bool? isError)
+    {
+        var list = GetOrCreateCheeseMessages(filePath);
+
+        int msgIndex = -1;
+        MonoMessage? target = null;
+        if (list != null)
+        {
+            msgIndex = FindCheeseToolMessageIndex(list, toolId);
+            if (msgIndex >= 0)
+            {
+                target = list[msgIndex];
+                if (target.tools != null)
+                {
+                    foreach (var tool in target.tools)
+                    {
+                        if (tool.tool_id == toolId)
+                        {
+                            tool.tool_result = toolResult;
+                            tool.isError = isError;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        SavePizzaConversationToolResult(filePath, toolId, toolName, toolResult, isError);
+
+        if (target != null && msgIndex >= 0)
+        {
+            DisplayCheeseStreamMessage(filePath, target, msgIndex);
+        }
+    }
+
+    private int FindCheeseToolMessageIndex(List<MonoMessage> list, string toolId)
+    {
+        for (int i = list.Count - 1; i >= 0; i--)
+        {
+            var tools = list[i].tools;
+            if (tools == null) continue;
+            foreach (var tool in tools)
+            {
+                if (tool.tool_id == toolId) return i;
+            }
+        }
+        return -1;
+    }
+
+    // MessageStart 时：追加一条新的流式行
+    private void AppendPizzaConversationStreaming(string? filePath, MonoMessage msg)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || filePath == DefaultOfLastSessionPath) return;
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            File.AppendAllText(filePath, SerializePizzaMessage(msg, streaming: true) + Environment.NewLine);
+        }
+        catch
+        {
+            // 保存失败不影响后续
+        }
+    }
+
+    // 非流式角色：追加一条最终消息行
+    private void AppendPizzaConversationMessage(string? filePath, MonoMessage msg)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || filePath == DefaultOfLastSessionPath) return;
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            File.AppendAllText(filePath, SerializePizzaMessage(msg, streaming: false) + Environment.NewLine);
+        }
+        catch
+        {
+            // 保存失败不影响显示
+        }
+    }
+    // deltas / toolCall 时：原地更新最后一条流式行
+    private void UpdatePizzaConversationStreaming(string? filePath, MonoMessage msg)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || filePath == DefaultOfLastSessionPath) return;
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            var lines = File.Exists(filePath) ? File.ReadAllLines(filePath).ToList() : new List<string>();
+
+            int target = -1;
+            for (int i = lines.Count - 1; i >= 0; i--)
+            {
+                if (IsStreamingMessageLine(lines[i]))
+                {
+                    target = i;
+                    break;
+                }
+            }
+
+            string newLine = SerializePizzaMessage(msg, streaming: true);
+            if (target >= 0) lines[target] = newLine;
+            else lines.Add(newLine);
+
+            File.WriteAllLines(filePath, lines);
+        }
+        catch
+        {
+            // 保存失败不影响后续
+        }
+    }
+
+    private bool IsStreamingMessageLine(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            return root.TryGetProperty("type", out var type) && type.GetString() == "message"
+                && root.TryGetProperty("streaming", out var streaming)
+                && streaming.ValueKind == JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void SavePizzaConversationToolResult(string? filePath, string toolId, string toolName, string toolResult, bool? isError)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || filePath == DefaultOfLastSessionPath) return;
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            File.AppendAllText(filePath, SerializeToolResultMessage(toolId, toolName, toolResult, isError) + Environment.NewLine);
+        }
+        catch
+        {
+            // 保存失败不影响显示
+        }
+    }
+
+    private string SerializePizzaMessage(MonoMessage msg, bool streaming)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "message");
+            writer.WriteString("timestamp", DateTime.Now.ToString("o"));
+            if (streaming) writer.WriteBoolean("streaming", true);
+
+            writer.WriteStartObject("message");
+            writer.WriteString("role", string.IsNullOrWhiteSpace(msg.role) ? "assistant" : msg.role);
+
+            writer.WriteStartArray("content");
+            if (!string.IsNullOrWhiteSpace(msg.reasoning))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("type", "thinking");
+                writer.WriteString("thinking", msg.reasoning);
+                writer.WriteEndObject();
+            }
+
+            if (msg.text != null)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("type", "text");
+                writer.WriteString("text", msg.text);
+                writer.WriteEndObject();
+            }
+
+            if (msg.tools != null)
+            {
+                foreach (var tool in msg.tools)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("type", "toolCall");
+                    writer.WriteString("id", tool.tool_id ?? "");
+                    writer.WriteString("name", tool.tool_name ?? "");
+                    writer.WritePropertyName("arguments");
+                    WriteJsonValue(writer, tool.tool_exec);
+                    writer.WriteEndObject();
+                }
+            }
+            writer.WriteEndArray();
+
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+            writer.Flush();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    private void WriteJsonValue(Utf8JsonWriter writer, string? rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            writer.WriteStringValue("");
+            return;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            doc.RootElement.WriteTo(writer);
+        }
+        catch
+        {
+            writer.WriteStringValue(rawJson);
+        }
+    }
+
+    private string SerializeToolResultMessage(string toolId, string toolName, string toolResult, bool? isError)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", "message");
+            writer.WriteString("timestamp", DateTime.Now.ToString("o"));
+
+            writer.WriteStartObject("message");
+            writer.WriteString("role", "toolResult");
+            writer.WriteString("toolCallId", toolId);
+            writer.WriteString("toolName", toolName);
+            writer.WriteStartArray("content");
+            writer.WriteStartObject();
+            writer.WriteString("type", "text");
+            writer.WriteString("text", toolResult);
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+            writer.WriteBoolean("isError", isError ?? false);
+            writer.WriteEndObject();
+
+            writer.WriteEndObject();
+            writer.Flush();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    private void DisplayCheeseStreamMessageStart(string? filePath, MonoMessage msg, int msgIndex)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => DisplayCheeseStreamMessageStart(filePath, msg, msgIndex));
+            return;
+        }
+
+        if (filePath != Last.SessionPath) return;
+
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, msgIndex));
+        ScrollToLatest();
+    }
+
+    private void DisplayCheeseStreamMessage(string? filePath, MonoMessage msg, int msgIndex)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => DisplayCheeseStreamMessage(filePath, msg, msgIndex));
+            return;
+        }
+
+        if (filePath != Last.SessionPath) return;
+
+        if (MessageUI.Count >= 3 && MessageUI[^2].MessageIndex == msgIndex)
+        {
+            MessageUI[^2] = new BasicMessageItem(msg, msgIndex);
+            ScrollToLatest();
+            return;
+        }
+
+        for (int i = 1; i < MessageUI.Count - 1; i++)
+        {
+            if (MessageUI[i].MessageIndex == msgIndex)
+            {
+                MessageUI[i] = new BasicMessageItem(msg, msgIndex);
+                ScrollToLatest();
+                return;
+            }
+        }
+
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, msgIndex));
+        ScrollToLatest();
+    }
+
     #region 当前页面刷新
     private void ScrollToLatest(bool force = false)
     {

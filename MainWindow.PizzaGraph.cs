@@ -563,29 +563,32 @@ namespace PiWpfUi
             var main = MainWindow.Instance;
             if (main == null) return false;
 
-            var items = new List<string>();
+            bool worked = false;
 
+            // 流式口：原始 PI JSON 行，逐行分析、落盘、按条件刷 UI
             if (GetNormalPortCache(true, "stream_result", out var stream))
             {
-                items.AddRange(stream!);
+                foreach (var line in stream!)
+                {
+                    main.HandleCheeseStreamLine(Bread?.sessionPath, line);
+                }
                 PortClear(true, "stream_result");
+                worked = true;
             }
 
+            // 非流式口：保持原样不动
             if (GetNormalPortCache(true, "result", out var result))
             {
-                items.AddRange(result!);
+                foreach (var item in result!)
+                {
+                    main.SavePizzaConversation(Bread?.sessionPath, "assistant", item);
+                    main.DisplayCheeseMessage(item);
+                }
                 PortClear(true, "result");
+                worked = true;
             }
 
-            if (items.Count == 0) return false;
-
-            foreach (var item in items)
-            {
-                main.SavePizzaConversation(Bread?.sessionPath, "assistant", item);
-                main.DisplayCheeseMessage(item);
-            }
-
-            return true;
+            return worked;
         }
 
        
@@ -1331,7 +1334,6 @@ namespace PiWpfUi
                 MessageBox.Show("当前面饼上没有检测用户输入的芝士");
                 return;
             }
-            MainWindow.Instance?.SavePizzaConversation(sessionPath, "user", content);
             foreach (var cheese in cheeselist)
             {
                 cheese.PortAdd(true, "user_input", content);
@@ -1389,9 +1391,32 @@ namespace PiWpfUi
         #region PIzza积木数据管理
         private void LoadPizzaGraphs()
         {
-            PizzaGraphs = SLManager.ImportFromJson<Dictionary<string, PizzaBread>>("", "PizzaGraph.json") ?? new();
-            // 统一使用短 sessionId 作为 Key
-            PizzaGraphs = PizzaGraphs.ToDictionary(kv => GetSessionId(kv.Key), kv => kv.Value);
+            var raw = SLManager.ImportFromJson<Dictionary<string, PizzaBread>>("", "PizzaGraph.json");
+            if (raw == null)
+            {
+                // Graph.json 缺失/为空/解析失败：重置所有会话图为默认内容
+                ResetPizzaGraphsToDefault();
+                return;
+            }
+
+            // 统一使用短 sessionId 作为 Key。旧数据里可能同时存在短 ID 和完整路径两种 key，
+            // 直接 ToDictionary 会在归并后出现重复 key 抛异常，这里按短 key 优先去重。
+            var merged = new Dictionary<string, PizzaBread>();
+            foreach (var kv in raw)
+            {
+                string sid = GetSessionId(kv.Key);
+                if (kv.Key == sid)
+                {
+                    // 短 key 优先，覆盖之前的长 key
+                    if (kv.Value != null || !merged.ContainsKey(sid)) merged[sid] = kv.Value;
+                }
+                else if (!merged.ContainsKey(sid))
+                {
+                    merged[sid] = kv.Value;
+                }
+            }
+            PizzaGraphs = merged;
+            if (PizzaGraphs.Count != raw.Count) SavePizzaGraphs();
 
             // 整个 PizzaGraphs 为空/null 时，重新生成默认测试积木
             if (PizzaGraphs.Count == 0)
@@ -1427,6 +1452,33 @@ namespace PiWpfUi
                 }
             }
             if (pathChanged) SavePizzaGraphs();
+        }
+
+        // Graph.json 缺失/为空/解析失败时：为所有已有会话 + LastPath 重建默认测试积木
+        private void ResetPizzaGraphsToDefault()
+        {
+            var reset = new Dictionary<string, PizzaBread>();
+
+            string dir = PizzaSessionDir;
+            if (Directory.Exists(dir))
+            {
+                foreach (var file in Directory.GetFiles(dir, "*.jsonl"))
+                {
+                    string sid = GetSessionId(file);
+                    if (string.IsNullOrEmpty(sid) || reset.ContainsKey(sid)) continue;
+                    reset[sid] = new PizzaBread(file, BuildDefaultCheeseList(60));
+                }
+            }
+
+            // LastPath 可能是新建占位 NULL，也要有一份默认图，避免页面全空
+            string lastSid = GetSessionId(Last.SessionPath);
+            if (!string.IsNullOrEmpty(lastSid) && !reset.ContainsKey(lastSid))
+            {
+                reset[lastSid] = new PizzaBread(Last.SessionPath, BuildDefaultCheeseList(60));
+            }
+
+            PizzaGraphs = reset;
+            SavePizzaGraphs();
         }
 
         private string FindSessionFilePath(string sid)
