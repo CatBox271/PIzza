@@ -467,6 +467,7 @@ namespace PiWpfUi
                 WorkType.UserMessage => WorkUserMessage(),
                 WorkType.AgentStream => WorkAgentStream(),
                 WorkType.MessageDisplay => WorkMessageDisplay(),
+                WorkType.Text => WorkText(),
                 WorkType.Time => WorkTime(),
                 WorkType.Merge => WorkMerge(),
                 WorkType.TestPopup => WorkTestPopup(),
@@ -488,6 +489,18 @@ namespace PiWpfUi
             if(!GetNormalPortCache(true, "user_input", out var result)) return false;
             PortAdd(false, "content", result!);
             PortClear(true, "user_input");
+            return true;
+        }
+
+        private bool WorkText()
+        {
+            if (!EnsurePara("text", CheeseParaType.String, out var text)) return false;
+            if (!EnsurePara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false))
+            {
+                PortClear(true, "input");
+            }
+
+            PortAdd(false, "output", text?.String ?? "");
             return true;
         }
 
@@ -849,7 +862,15 @@ namespace PiWpfUi
             if (GetWorkDraft(out var draft) && draft!.Count != 0)
             {
                 //还需要实际看一下有没有PI的后台，如果没有就放行
-                if (!MainWindow.Instance.PIAgent.TryGetValue(MainWindow.Instance.GetSessionId(Bread!.sessionPath), out var client) || client == null) return false;
+                if (!MainWindow.Instance.PIAgent.TryGetValue(MainWindow.Instance.GetSessionId(Bread!.sessionPath), out var client) || client == null)
+                {
+                    draft = new();
+                }
+                else
+                {
+                    //这里其实要个处理完这个处理下个的
+                    return false;
+                }
             }
             AddWorkDraft(result!);
             PortClear(true,"content");
@@ -1379,6 +1400,14 @@ namespace PiWpfUi
             Type = CheeseParaType.Bool,
             Bool = false,
         };
+
+        public readonly static CheesePara TextContent = new()
+        {
+            Name = "文本内容",
+            Description = "要输出的固定文本",
+            Type = CheeseParaType.String,
+            String = "",
+        };
         /// <summary>
         /// clone parameter
         /// </summary>
@@ -1518,6 +1547,22 @@ namespace PiWpfUi
             }
         };
 
+        public readonly static BaseCheese Text = new()
+        {
+            Name = "文本",
+            Input = new() { ["input"] = new CheesePort(true) },
+            Output = new() { ["output"] = new CheesePort(false) },
+            WaitType = WaitType.Any,
+            WorkType = WorkType.Text,
+            OutType = OutType.Any,
+            Parameter = new()
+            {
+                ["text"] = CP(TextContent),
+                ["addition"] = CP(Addition),
+                ["addition_fore_back"] = CP(AdditionFB),
+            }
+        };
+
         public readonly static BaseCheese FileWriter = new()
         {
             Name = "写入文件",
@@ -1555,6 +1600,7 @@ namespace PiWpfUi
             Clone(RegexReplace),
             Clone(RegexExtract),
             Clone(Contains),
+            Clone(Text),
             Clone(FileWriter),
         };
         #endregion 
@@ -1590,7 +1636,7 @@ namespace PiWpfUi
         [JsonIgnore]
         public Dictionary<WorkType, List<BaseCheese>> WorkTypeIndex { get; private set; } = new();
 
-        private void RebuildIndex()
+        public void RebuildIndex()
         {
             CheeseIndex.Clear();
             WorkTypeIndex.Clear();
@@ -1815,24 +1861,7 @@ namespace PiWpfUi
                 return;
             }
 
-            // 统一使用短 sessionId 作为 Key。旧数据里可能同时存在短 ID 和完整路径两种 key，
-            // 直接 ToDictionary 会在归并后出现重复 key 抛异常，这里按短 key 优先去重。
-            var merged = new Dictionary<string, PizzaBread>();
-            foreach (var kv in raw)
-            {
-                string sid = GetSessionId(kv.Key);
-                if (kv.Key == sid)
-                {
-                    // 短 key 优先，覆盖之前的长 key
-                    if (kv.Value != null || !merged.ContainsKey(sid)) merged[sid] = kv.Value;
-                }
-                else if (!merged.ContainsKey(sid))
-                {
-                    merged[sid] = kv.Value;
-                }
-            }
-            PizzaGraphs = merged;
-            if (PizzaGraphs.Count != raw.Count) SavePizzaGraphs();
+            PizzaGraphs = raw;
 
             // 整个 PizzaGraphs 为空/null 时，重新生成默认测试积木
             if (PizzaGraphs.Count == 0)
@@ -1842,32 +1871,18 @@ namespace PiWpfUi
                 PizzaGraphs[sid] = new PizzaBread(filePath, BuildDefaultCheeseList(60));
                 SavePizzaGraphs();
             }
-            else
-            {
-                // 某个 PizzaBread 为 null 时，也重置成默认测试积木
-                bool changed = false;
-                foreach (var sid in PizzaGraphs.Keys.ToList())
-                {
-                    if (PizzaGraphs[sid] == null)
-                    {
-                        PizzaGraphs[sid] = new PizzaBread(FindSessionFilePath(sid), BuildDefaultCheeseList(60));
-                        changed = true;
-                    }
-                }
-                if (changed) SavePizzaGraphs();
-            }
 
-            // 旧数据里 sessionPath 可能没存/为空，用短 ID 反查文件路径补上
-            bool pathChanged = false;
-            foreach (var kv in PizzaGraphs)
+            // 某个 PizzaBread 为 null 时，也重置成默认测试积木
+            bool changed = false;
+            foreach (var item in PizzaGraphs)
             {
-                if (kv.Value != null && string.IsNullOrEmpty(kv.Value.sessionPath))
+                if (item.Value == null)
                 {
-                    kv.Value.sessionPath = FindSessionFilePath(kv.Key);
-                    pathChanged = true;
+                    PizzaGraphs[item.Key] = new PizzaBread(FindSessionFilePath(item.Key), BuildDefaultCheeseList(60));
+                    changed = true;
                 }
             }
-            if (pathChanged) SavePizzaGraphs();
+            if (changed) SavePizzaGraphs();
         }
 
         // Graph.json 缺失/为空/解析失败时：为所有已有会话 + LastPath 重建默认测试积木
