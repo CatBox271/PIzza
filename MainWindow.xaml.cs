@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 
 namespace PiWpfUi;
 
@@ -64,7 +66,16 @@ public partial class MainWindow : Window
         RebuildPagesForSession(Last.SessionPath);//初始化当前session的页面
         WhileChangeSessoin += ChangeSessionChatInput;
     }
+    private static async Task MessageLog(string error)
+    {
+        MessageBox.Show(error);
+    }
 
+    public static void LogError(string error)
+    { 
+        Debug.WriteLine(error);
+        _ = MessageLog(error);
+    }
     private void Button_Click(object sender, RoutedEventArgs e)
     {
 

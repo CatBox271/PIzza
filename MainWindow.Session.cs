@@ -33,7 +33,7 @@ public partial class MainWindow
     private string DefaultFolderName = "PIzza";
     private readonly string DefaultOfLastSessionPath = "NULL";   // 新建对话占位
 
-    // PIzza 自己的对话文件目录（和 PI agent 的 session 文件分开）
+    // PIzza 自己的会话根目录（和 PI agent 的 session 文件分开）
     private string _PizzaSessionDir = "";
     private string PizzaSessionDir
     {
@@ -41,23 +41,30 @@ public partial class MainWindow
         {
             if (string.IsNullOrEmpty(_PizzaSessionDir))
             {
-                _PizzaSessionDir = Path.Combine(SLManager.PersistentDataPath, "PizzaSessions");
+                _PizzaSessionDir = Path.Combine(SLManager.PersistentDataPath, "PizzaSession");
                 Directory.CreateDirectory(_PizzaSessionDir);
             }
             return _PizzaSessionDir;
         }
     }
 
-    // 新建一个 PIzza 自己的对话文件，返回完整路径
+    private readonly string PizzaConversationFileName = "对话记录.jsonl";
+    private readonly string PizzaGraphFileName = "PIzza.json";
+
+    private string GetPizzaSessionDir(string sessionId) => Path.Combine(PizzaSessionDir, sessionId);
+    private string GetPizzaConversationFilePath(string sessionId) => Path.Combine(GetPizzaSessionDir(sessionId), PizzaConversationFileName);
+    private string GetPizzaGraphFilePath(string sessionId) => Path.Combine(GetPizzaSessionDir(sessionId), PizzaGraphFileName);
+
+    // 新建一个 PIzza 自己的会话文件夹和对话记录，返回对话记录完整路径
     public string CreatePizzaSessionFile()
     {
-        Directory.CreateDirectory(PizzaSessionDir);
         string id = Guid.NewGuid().ToString("N");
-        string path = Path.Combine(PizzaSessionDir, id + ".jsonl");
+        string dir = Path.Combine(PizzaSessionDir, id);
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, PizzaConversationFileName);
         if (!File.Exists(path)) File.WriteAllText(path, "");
         return path;
     }
-
     #region Session切换处理
     private void SessionList_SelectionChanged(object sender, SelectionChangedEventArgs e)//点击侧边栏〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓〓
     {
@@ -99,9 +106,10 @@ public partial class MainWindow
         //读取 PIzza 自己的 Session 列表信息
         string dir = PizzaSessionDir;
         if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);//创建
-        string[] files = Directory.GetFiles(dir);
-        foreach (string _file in files)
+        foreach (string sub in Directory.GetDirectories(dir))
         {
+            string _file = Path.Combine(sub, PizzaConversationFileName);
+            if (!File.Exists(_file)) continue;
             string name = FindSessionName(_file);
             if (string.IsNullOrEmpty(name))
             {
@@ -257,7 +265,18 @@ public partial class MainWindow
 
     public string GetSessionId(string path)
     {
-        //默认文件存在
+        if (string.IsNullOrWhiteSpace(path)) return path;
+
+        string full = Path.GetFullPath(path);
+        string root = Path.GetFullPath(PizzaSessionDir);
+        if (full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            string rel = Path.GetRelativePath(root, full);
+            string[] parts = rel.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 0) return parts[0];
+        }
+
+        //旧布局回退
         string file_name = Path.GetFileNameWithoutExtension(path);
         string session_id = file_name;
         if (file_name.Contains('_')) session_id = file_name.Split("_")[1];

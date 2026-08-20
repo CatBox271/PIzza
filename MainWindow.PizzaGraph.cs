@@ -346,14 +346,23 @@ namespace PiWpfUi
 
         public bool DoWait()
         {
-            bool judge = WaitType switch
+            bool judge = false;
+            try
             {
-                WaitType.Any => WaitAny(),
-                WaitType.All => WaitAll(),
-                WaitType.Assign => WaitAssign(),
-                _ => false
-            };
-            DoWork();
+                judge = WaitType switch
+                {
+                    WaitType.Any => WaitAny(),
+                    WaitType.All => WaitAll(),
+                    WaitType.Assign => WaitAssign(),
+                    _ => false
+                };
+            }
+            catch(Exception e)
+            {
+                MainWindow.LogError(e.ToString());
+            }
+
+            if (judge) DoWork();
             return judge;
         }
 
@@ -462,23 +471,31 @@ namespace PiWpfUi
         {
             Debug.WriteLine(Name);
             //暂时不管执行错误的情况
-            bool get_result = WorkType switch
+            bool get_result = false;
+            try
             {
-                WorkType.UserMessage => WorkUserMessage(),
-                WorkType.AgentStream => WorkAgentStream(),
-                WorkType.MessageDisplay => WorkMessageDisplay(),
-                WorkType.Text => WorkText(),
-                WorkType.Time => WorkTime(),
-                WorkType.Merge => WorkMerge(),
-                WorkType.TestPopup => WorkTestPopup(),
-                WorkType.RegexReplace => WorkRegexReplace(),
-                WorkType.RegexExtract => WorkRegexExtract(),
-                WorkType.Contains => WorkContains(),
-                WorkType.FileWriter => WorkFileWriter(),
-                _ => true,
-            };
+                get_result = WorkType switch
+                {
+                    WorkType.UserMessage => WorkUserMessage(),
+                    WorkType.AgentStream => WorkAgentStream(),
+                    WorkType.MessageDisplay => WorkMessageDisplay(),
+                    WorkType.Text => WorkText(),
+                    WorkType.Time => WorkTime(),
+                    WorkType.Merge => WorkMerge(),
+                    WorkType.TestPopup => WorkTestPopup(),
+                    WorkType.RegexReplace => WorkRegexReplace(),
+                    WorkType.RegexExtract => WorkRegexExtract(),
+                    WorkType.Contains => WorkContains(),
+                    WorkType.FileWriter => WorkFileWriter(),
+                    _ => false,
+                };
 
-            DoOut();
+                if (get_result) DoOut();
+            }
+            catch(Exception e)
+            {
+                MainWindow.LogError(e.ToString());
+            }
             return get_result;
         }
 
@@ -579,13 +596,16 @@ namespace PiWpfUi
             foreach (var item in input!)
             {
                 bool ok;
-                if (regexMode)
+                try
                 {
-                    ok = Regex.IsMatch(item, keyword.String!);
+                    if (regexMode) ok = Regex.IsMatch(item, keyword.String!);
+                    else ok = item.Contains(keyword.String!, StringComparison.Ordinal);
                 }
-                else
+                catch (Exception e)
                 {
-                    ok = item.Contains(keyword.String!, StringComparison.Ordinal);
+                    MessageBox.Show(e.ToString());
+                    PortClear(true, "input");
+                    return false;
                 }
                 output.Add(ok ? "true" : "false");
             }
@@ -627,15 +647,24 @@ namespace PiWpfUi
                     continue;
                 }
 
-                if (occurrence <= 0)
+                try
                 {
-                    if (regexMode) output.Add(Regex.Replace(item, search.String!, m => replacement));
-                    else output.Add(item.Replace(search.String!, replacement));
+                    if (occurrence <= 0)
+                    {
+                        if (regexMode) output.Add(Regex.Replace(item, search.String!, m => replacement));
+                        else output.Add(item.Replace(search.String!, replacement));
+                    }
+                    else
+                    {
+                        if (regexMode) output.Add(ReplaceNthRegex(item, search.String!, replacement, occurrence));
+                        else output.Add(ReplaceNthLiteral(item, search.String!, replacement, occurrence));
+                    }
                 }
-                else
+                catch (Exception e)
                 {
-                    if (regexMode) output.Add(ReplaceNthRegex(item, search.String!, replacement, occurrence));
-                    else output.Add(ReplaceNthLiteral(item, search.String!, replacement, occurrence));
+                    MessageBox.Show(e.ToString());
+                    PortClear(true, "input");
+                    return false;
                 }
             }
 
@@ -680,18 +709,27 @@ namespace PiWpfUi
                 {
                     if (string.IsNullOrEmpty(item)) continue;
 
-                    var matches = Regex.Matches(item, start.String!);
-                    var selected = new List<string>();
-                    for (int i = 0; i < matches.Count; i++)
+                    try
                     {
-                        if (occurrence > 0 && i + 1 != occurrence) continue;
-                        if (groupIndex >= matches[i].Groups.Count) continue;
-                        selected.Add(matches[i].Groups[groupIndex].Value);
-                    }
+                        var matches = Regex.Matches(item, start.String!);
+                        var selected = new List<string>();
+                        for (int i = 0; i < matches.Count; i++)
+                        {
+                            if (occurrence > 0 && i + 1 != occurrence) continue;
+                            if (groupIndex >= matches[i].Groups.Count) continue;
+                            selected.Add(matches[i].Groups[groupIndex].Value);
+                        }
 
-                    if (selected.Count == 0) continue;
-                    if (outputList) output.AddRange(selected);
-                    else output.Add(string.Concat(selected));
+                        if (selected.Count == 0) continue;
+                        if (outputList) output.AddRange(selected);
+                        else output.Add(string.Concat(selected));
+                    }
+                    catch (Exception e)
+                    {
+                        MessageBox.Show(e.ToString());
+                        PortClear(true, "input");
+                        return false;
+                    }
                 }
             }
             else
@@ -924,47 +962,74 @@ namespace PiWpfUi
         }
         #endregion
 
-        #region Out
+        #region Addition
         // 通用 para：Addition。输出时，把刚刚接收到的内容一起追加到输出缓存
         private void DoAddition()
         {
-            if (!EnsurePara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false)) return;
-
-            bool front = true;
-            if (Parameter.TryGetValue("addition_fore_back", out var fb) && fb?.Type == CheeseParaType.Bool && fb.Bool.HasValue)
+            try
             {
-                front = fb.Bool.Value;
-            }
+                if (!EnsurePara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false)) return;
 
-            foreach (var input in Input.Values)
-            {
-                if (input?.Cache == null || input.Cache.Count == 0) continue;
-                foreach (var output in Output.Values)
+                bool front = true;
+                if (Parameter.TryGetValue("addition_fore_back", out var fb) && fb != null)
                 {
-                    if (output?.Cache == null) continue;
-                    if (front) output.Cache.InsertRange(0, input.Cache);
-                    else output.Cache.AddRange(input.Cache);
+                    switch (fb.Type)
+                    {
+                        case CheeseParaType.Bool:
+                            front = fb.Bool ?? true;
+                            break;
+                        default:
+                            front = true;
+                            break;
+                    }
                 }
-                input.Cache.Clear();
+
+                foreach (var input in Input.Values)
+                {
+                    if (input?.Cache == null || input.Cache.Count == 0) continue;
+                    foreach (var output in Output.Values)
+                    {
+                        if (output?.Cache == null) continue;
+                        if (front) output.Cache.InsertRange(0, input.Cache);
+                        else output.Cache.AddRange(input.Cache);
+                    }
+                    input.Cache.Clear();
+                }
+            }
+            catch (Exception e)
+            {
+                MainWindow.LogError(e.ToString());
             }
         }
+        #endregion
+
+        #region Out
 
         private void DoOut()
         {
             DoAddition();
-
-
-            List<string>? idx = OutType switch
+            List<string>? idx = null;
+            try
             {
-                OutType.Any => OutAny(),
-                OutType.All => OutAll(),
-                OutType.OutProgram => OutProgram(),
-                OutType.OutHttp => OutHttp(),
-                _ => null,
-            };
+                idx = OutType switch
+                {
+                    OutType.Any => OutAny(),
+                    OutType.All => OutAll(),
+                    OutType.OutProgram => OutProgram(),
+                    OutType.OutHttp => OutHttp(),
+                    _ => null,
+                };
+            }
+            catch(Exception e)
+            {
+                MainWindow.LogError(e.ToString());
+            }
             if (idx == null || idx.Count == 0) return;
+
             WhileBreadNeedHeat?.Invoke(idx);
         }
+
+
         private List<string> GetAllOutCheeseId()
         {
             List<string> ids = new();
@@ -1849,55 +1914,68 @@ namespace PiWpfUi
         private bool _isCheeseOverDeleteZone = false;
 
         #endregion
-
         #region PIzza积木数据管理
         private void LoadPizzaGraphs()
         {
-            var raw = SLManager.ImportFromJson<Dictionary<string, PizzaBread>>("", "PizzaGraph.json");
-            if (raw == null)
+            PizzaGraphs = new();
+
+            if (Directory.Exists(PizzaSessionDir))
             {
-                // Graph.json 缺失/为空/解析失败：重置所有会话图为默认内容
+                foreach (var dir in Directory.GetDirectories(PizzaSessionDir))
+                {
+                    string sid = Path.GetFileName(dir);
+                    string graphFile = Path.Combine(dir, PizzaGraphFileName);
+                    if (!File.Exists(graphFile)) continue;
+
+                    try
+                    {
+                        var bread = JsonSerializer.Deserialize<PizzaBread>(File.ReadAllText(graphFile));
+                        if (bread == null) continue;
+                        bread.sessionPath = GetPizzaConversationFilePath(sid);
+                        PizzaGraphs[sid] = bread;
+                    }
+                    catch
+                    {
+                        // 单个会话图损坏不影响其他会话加载
+                    }
+                }
+            }
+
+            if (PizzaGraphs.Count == 0)
+            {
                 ResetPizzaGraphsToDefault();
                 return;
             }
 
-            PizzaGraphs = raw;
+            NormalizePizzaGraphs();
+        }
 
-            // 整个 PizzaGraphs 为空/null 时，重新生成默认测试积木
-            if (PizzaGraphs.Count == 0)
-            {
-                string filePath = Last.SessionPath;
-                string sid = GetSessionId(filePath);
-                PizzaGraphs[sid] = new PizzaBread(filePath, BuildDefaultCheeseList(60));
-                SavePizzaGraphs();
-            }
-
-            // 某个 PizzaBread 为 null 时，也重置成默认测试积木
+        // 修复已加载的图：null 的 PizzaBread 补默认图
+        private void NormalizePizzaGraphs()
+        {
             bool changed = false;
-            foreach (var item in PizzaGraphs)
+            foreach (var sid in PizzaGraphs.Keys.ToList())
             {
-                if (item.Value == null)
-                {
-                    PizzaGraphs[item.Key] = new PizzaBread(FindSessionFilePath(item.Key), BuildDefaultCheeseList(60));
-                    changed = true;
-                }
+                if (PizzaGraphs[sid] != null) continue;
+                PizzaGraphs[sid] = new PizzaBread(GetPizzaConversationFilePath(sid), BuildDefaultCheeseList(60));
+                changed = true;
             }
             if (changed) SavePizzaGraphs();
         }
 
-        // Graph.json 缺失/为空/解析失败时：为所有已有会话 + LastPath 重建默认测试积木
+        // 没有任何会话图时：为所有已有会话 + LastPath 重建默认图
         private void ResetPizzaGraphsToDefault()
         {
             var reset = new Dictionary<string, PizzaBread>();
 
-            string dir = PizzaSessionDir;
-            if (Directory.Exists(dir))
+            if (Directory.Exists(PizzaSessionDir))
             {
-                foreach (var file in Directory.GetFiles(dir, "*.jsonl"))
+                foreach (var dir in Directory.GetDirectories(PizzaSessionDir))
                 {
-                    string sid = GetSessionId(file);
-                    if (string.IsNullOrEmpty(sid) || reset.ContainsKey(sid)) continue;
-                    reset[sid] = new PizzaBread(file, BuildDefaultCheeseList(60));
+                    string sid = Path.GetFileName(dir);
+                    string conv = Path.Combine(dir, PizzaConversationFileName);
+                    if (!File.Exists(conv)) continue;
+                    reset[sid] = new PizzaBread(conv, BuildDefaultCheeseList(60));
                 }
             }
 
@@ -1905,7 +1983,8 @@ namespace PiWpfUi
             string lastSid = GetSessionId(Last.SessionPath);
             if (!string.IsNullOrEmpty(lastSid) && !reset.ContainsKey(lastSid))
             {
-                reset[lastSid] = new PizzaBread(Last.SessionPath, BuildDefaultCheeseList(60));
+                string conv = lastSid == DefaultOfLastSessionPath ? DefaultOfLastSessionPath : GetPizzaConversationFilePath(lastSid);
+                reset[lastSid] = new PizzaBread(conv, BuildDefaultCheeseList(60));
             }
 
             PizzaGraphs = reset;
@@ -1914,46 +1993,54 @@ namespace PiWpfUi
 
         private string FindSessionFilePath(string sid)
         {
-            // 先找 PIzza 自己的对话文件，再回退找 PI agent 的旧文件
-            var ownDir = PizzaSessionDir;
-            if (Directory.Exists(ownDir))
-            {
-                foreach (var file in Directory.GetFiles(ownDir))
-                {
-                    if (GetSessionId(file) == sid) return file;
-                }
-            }
-            var piDir = Path.Combine(SessionDir, DefaultFolderName);
-            if (Directory.Exists(piDir))
-            {
-                foreach (var file in Directory.GetFiles(piDir))
-                {
-                    if (GetSessionId(file) == sid) return file;
-                }
-            }
-            return sid;
+            if (string.IsNullOrEmpty(sid) || sid == DefaultOfLastSessionPath) return sid;
+            return GetPizzaConversationFilePath(sid);
         }
 
         private void SavePizzaGraphs()
         {
-            SLManager.ExportToJson(PizzaGraphs, "", "PizzaGraph.json");
+            foreach (var sid in PizzaGraphs.Keys.ToList())
+            {
+                SavePizzaGraph(sid, PizzaGraphs[sid]);
+            }
+        }
+
+        private void SavePizzaGraph(string sid, PizzaBread? bread)
+        {
+            if (bread == null) return;
+            if (string.IsNullOrEmpty(sid) || sid == DefaultOfLastSessionPath) return;
+
+            bread.sessionPath = GetPizzaConversationFilePath(sid);
+            string dir = Path.Combine(PizzaSessionDir, sid);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, PizzaGraphFileName), JsonSerializer.Serialize(bread, new JsonSerializerOptions { WriteIndented = true }));
         }
 
         // 当前 pizza 页所属 session 的 SessionCheese；没有就补一个
+        // 只读获取当前 pizza 页所属 session 的 PizzaBread；不创建，避免副作用
         private PizzaBread? CurrentSessionCheese()
         {
             if (CurrentPage?.type != "pizza") return null;
             string filePath = CurrentPage.sessionId ?? Last.SessionPath;
             string sessionId = GetSessionId(filePath);
+            return PizzaGraphs.TryGetValue(sessionId, out var sc) ? sc : null;
+        }
+
+        // 需要往当前 session 里加芝士时调用；没有就建一个空面包（持久化由 SaveCurrentPizzaGraph 负责）
+        private PizzaBread GetOrCreateCurrentSessionCheese()
+        {
+            string filePath = CurrentPage?.sessionId ?? Last.SessionPath;
+            string sessionId = GetSessionId(filePath);
             if (!PizzaGraphs.TryGetValue(sessionId, out var sc))
             {
-                sc = new PizzaBread(filePath, BuildDefaultCheeseList(60));
+                string conv = sessionId == DefaultOfLastSessionPath ? DefaultOfLastSessionPath : GetPizzaConversationFilePath(sessionId);
+                sc = new PizzaBread(conv, new List<BaseCheese>());
                 PizzaGraphs[sessionId] = sc;
             }
             return sc;
         }
 
-        // 把当前 CheeseUI 写回当前 pizza 页所属 session，并落盘
+        // 把当前 CheeseUI 写回当前 pizza 页所属 session，并落盘到该 session 文件夹
         private void SaveCurrentPizzaGraph()
         {
             if (CurrentPage?.type != "pizza") return;
@@ -1961,13 +2048,13 @@ namespace PiWpfUi
             string sessionId = GetSessionId(filePath);
             if (!PizzaGraphs.TryGetValue(sessionId, out var sc))
             {
-                sc = new PizzaBread(filePath, new List<BaseCheese>());
+                string conv = sessionId == DefaultOfLastSessionPath ? DefaultOfLastSessionPath : GetPizzaConversationFilePath(sessionId);
+                sc = new PizzaBread(conv, new List<BaseCheese>());
                 PizzaGraphs[sessionId] = sc;
             }
             sc.ReplaceCheeses(CheeseUI);
-            SavePizzaGraphs();
+            SavePizzaGraph(sessionId, sc);
         }
-
         // ---------- 撤销/重做/重置 ----------
         private void PushUndo()
         {
@@ -2043,11 +2130,11 @@ namespace PiWpfUi
         // 新建会话（RunPi 里 session_id == null）时，立刻生成默认测试积木并存盘
         public void EnsureDefaultPizzaGraph(string sessionId)
         {
-            string filePath = sessionId;
             string key = GetSessionId(sessionId);
             if (PizzaGraphs.ContainsKey(key)) return;
-            PizzaGraphs[key] = new PizzaBread(filePath, BuildDefaultCheeseList(60));
-            SavePizzaGraphs();
+            string conv = key == DefaultOfLastSessionPath ? DefaultOfLastSessionPath : GetPizzaConversationFilePath(key);
+            PizzaGraphs[key] = new PizzaBread(conv, BuildDefaultCheeseList(60));
+            SavePizzaGraph(key, PizzaGraphs[key]);
         }
 
         // 从 CheeseUI 的 Output 字典重建连线（连接关系存在节点自身）
@@ -2275,8 +2362,8 @@ namespace PiWpfUi
 
         private void AddCheeseFromTemplate(BaseCheese template)
         {
-            var sc = CurrentSessionCheese();
-            if (sc == null) return;
+            if (CurrentPage?.type != "pizza") return;
+            var sc = GetOrCreateCurrentSessionCheese();
 
             PushUndo();
 

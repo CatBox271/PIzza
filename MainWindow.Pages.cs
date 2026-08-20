@@ -99,8 +99,8 @@ public partial class MainWindow
 
     private void AddDefaultCheesePreset()
     {
-        var sc = CurrentSessionCheese();
-        if (sc == null) return;
+        if (CurrentPage?.type != "pizza") return;
+        var sc = GetOrCreateCurrentSessionCheese();
         var baseX = 60 + CheeseUI.Count * 40;
         foreach (var cheese in BuildDefaultCheeseList(baseX))
         {
