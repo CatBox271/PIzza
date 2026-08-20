@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
@@ -9,6 +9,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography.Xml;
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -469,6 +470,10 @@ namespace PiWpfUi
                 WorkType.Time => WorkTime(),
                 WorkType.Merge => WorkMerge(),
                 WorkType.TestPopup => WorkTestPopup(),
+                WorkType.RegexReplace => WorkRegexReplace(),
+                WorkType.RegexExtract => WorkRegexExtract(),
+                WorkType.Contains => WorkContains(),
+                WorkType.FileWriter => WorkFileWriter(),
                 _ => true,
             };
 
@@ -502,6 +507,250 @@ namespace PiWpfUi
         {
             if (Parameter.TryGetValue(key, out var p) && p?.Type == CheeseParaType.Int && p.Int.HasValue) return p.Int.Value;
             return 0;
+        }
+
+        private static string ReplaceNthLiteral(string input, string pattern, string replacement, int occurrence)
+        {
+            int index = -1;
+            for (int i = 0; i < occurrence; i++)
+            {
+                index = input.IndexOf(pattern, index + 1, StringComparison.Ordinal);
+                if (index < 0) return input;
+            }
+            return input.Remove(index, pattern.Length).Insert(index, replacement);
+        }
+
+        private static string ReplaceNthRegex(string input, string pattern, string replacement, int occurrence)
+        {
+            var matches = Regex.Matches(input, pattern);
+            if (occurrence <= 0 || occurrence > matches.Count) return input;
+            var m = matches[occurrence - 1];
+            return input.Remove(m.Index, m.Length).Insert(m.Index, replacement);
+        }
+
+        private static List<string> ExtractBetween(string input, string start, string end)
+        {
+            var results = new List<string>();
+            if (string.IsNullOrEmpty(start) || string.IsNullOrEmpty(end)) return results;
+
+            int pos = 0;
+            while (pos <= input.Length)
+            {
+                int s = input.IndexOf(start, pos, StringComparison.Ordinal);
+                if (s < 0) break;
+                int contentStart = s + start.Length;
+                int e = input.IndexOf(end, contentStart, StringComparison.Ordinal);
+                if (e < 0) break;
+                results.Add(input.Substring(contentStart, e - contentStart));
+                pos = e + end.Length;
+            }
+            return results;
+        }
+
+        private bool WorkContains()
+        {
+            if (!GetNormalPortCache(true, "input", out var input)) return false;
+            if (!EnsurePara("keyword", CheeseParaType.String, out var keyword) || string.IsNullOrEmpty(keyword!.String))
+            {
+                PortClear(true, "input");
+                return false;
+            }
+
+            bool regexMode = false;
+            if (Parameter.TryGetValue("regex_mode", out var rm) && rm?.Type == CheeseParaType.Bool && rm.Bool.HasValue)
+            {
+                regexMode = rm.Bool.Value;
+            }
+
+            var output = new List<string>();
+            foreach (var item in input!)
+            {
+                bool ok;
+                if (regexMode)
+                {
+                    ok = Regex.IsMatch(item, keyword.String!);
+                }
+                else
+                {
+                    ok = item.Contains(keyword.String!, StringComparison.Ordinal);
+                }
+                output.Add(ok ? "true" : "false");
+            }
+
+            PortClear(true, "input");
+            PortAdd(false, "result", output);
+            return true;
+        }
+
+        private bool WorkRegexReplace()
+        {
+            if (!GetNormalPortCache(true, "input", out var input)) return false;
+            if (!EnsurePara("search", CheeseParaType.String, out var search) || string.IsNullOrEmpty(search!.String))
+            {
+                PortClear(true, "input");
+                return false;
+            }
+
+            string replacement = "";
+            if (Parameter.TryGetValue("replace", out var rp) && rp?.Type == CheeseParaType.String && rp.String != null)
+            {
+                replacement = rp.String;
+            }
+
+            bool regexMode = false;
+            if (Parameter.TryGetValue("regex_mode", out var rm) && rm?.Type == CheeseParaType.Bool && rm.Bool.HasValue)
+            {
+                regexMode = rm.Bool.Value;
+            }
+
+            int occurrence = GetOccurrence();
+
+            var output = new List<string>();
+            foreach (var item in input!)
+            {
+                if (string.IsNullOrEmpty(item))
+                {
+                    output.Add(item);
+                    continue;
+                }
+
+                if (occurrence <= 0)
+                {
+                    if (regexMode) output.Add(Regex.Replace(item, search.String!, m => replacement));
+                    else output.Add(item.Replace(search.String!, replacement));
+                }
+                else
+                {
+                    if (regexMode) output.Add(ReplaceNthRegex(item, search.String!, replacement, occurrence));
+                    else output.Add(ReplaceNthLiteral(item, search.String!, replacement, occurrence));
+                }
+            }
+
+            PortClear(true, "input");
+            PortAdd(false, "output", output);
+            return true;
+        }
+
+        private bool WorkRegexExtract()
+        {
+            if (!GetNormalPortCache(true, "input", out var input)) return false;
+
+            bool regexMode = false;
+            if (Parameter.TryGetValue("regex_mode", out var rm) && rm?.Type == CheeseParaType.Bool && rm.Bool.HasValue)
+            {
+                regexMode = rm.Bool.Value;
+            }
+
+            int occurrence = GetOccurrence();
+            bool outputList = true;
+            if (Parameter.TryGetValue("output_list", out var ol) && ol?.Type == CheeseParaType.Bool && ol.Bool.HasValue)
+            {
+                outputList = ol.Bool.Value;
+            }
+
+            var output = new List<string>();
+            if (regexMode)
+            {
+                if (!EnsurePara("start", CheeseParaType.String, out var start) || string.IsNullOrEmpty(start!.String))
+                {
+                    PortClear(true, "input");
+                    return false;
+                }
+                if (!EnsurePara("end", CheeseParaType.Int, out var end) || !end!.Int.HasValue)
+                {
+                    PortClear(true, "input");
+                    return false;
+                }
+                int groupIndex = end.Int.Value;
+
+                foreach (var item in input!)
+                {
+                    if (string.IsNullOrEmpty(item)) continue;
+
+                    var matches = Regex.Matches(item, start.String!);
+                    var selected = new List<string>();
+                    for (int i = 0; i < matches.Count; i++)
+                    {
+                        if (occurrence > 0 && i + 1 != occurrence) continue;
+                        if (groupIndex >= matches[i].Groups.Count) continue;
+                        selected.Add(matches[i].Groups[groupIndex].Value);
+                    }
+
+                    if (selected.Count == 0) continue;
+                    if (outputList) output.AddRange(selected);
+                    else output.Add(string.Concat(selected));
+                }
+            }
+            else
+            {
+                if (!EnsurePara("start", CheeseParaType.String, out var start) || string.IsNullOrEmpty(start!.String))
+                {
+                    PortClear(true, "input");
+                    return false;
+                }
+                if (!EnsurePara("end", CheeseParaType.String, out var end) || string.IsNullOrEmpty(end!.String))
+                {
+                    PortClear(true, "input");
+                    return false;
+                }
+
+                foreach (var item in input!)
+                {
+                    if (string.IsNullOrEmpty(item))
+                    {
+                        output.Add(item);
+                        continue;
+                    }
+
+                    var matches = ExtractBetween(item, start.String!, end.String!);
+                    if (occurrence > 0)
+                    {
+                        matches = matches.Skip(occurrence - 1).Take(1).ToList();
+                    }
+
+                    if (matches.Count == 0) continue;
+
+                    if (outputList) output.AddRange(matches);
+                    else output.Add(string.Concat(matches));
+                }
+            }
+
+            PortClear(true, "input");
+            PortAdd(false, "output", output);
+            return true;
+        }
+
+        private bool WorkFileWriter()
+        {
+            if (!GetNormalPortCache(true, "input", out var input)) return false;
+            if (!EnsurePara("path", CheeseParaType.String, out var path) || string.IsNullOrWhiteSpace(path!.String))
+            {
+                PortClear(true, "input");
+                return false;
+            }
+
+            bool append = false;
+            if (Parameter.TryGetValue("append", out var ap) && ap?.Type == CheeseParaType.Bool && ap.Bool.HasValue)
+            {
+                append = ap.Bool.Value;
+            }
+
+            try
+            {
+                var dir = Path.GetDirectoryName(path.String);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                if (append) File.AppendAllLines(path.String!, input!);
+                else File.WriteAllLines(path.String!, input!);
+
+                PortClear(true, "input");
+                return true;
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show(e.ToString());
+                return false;
+            }
         }
 
         private bool WorkMerge()
@@ -750,6 +999,7 @@ namespace PiWpfUi
         #region Para
         public void DoPara()
         {
+            if (WorkType == WorkType.RegexExtract) UpdateRegexExtractParamUI();
             foreach (var type in DealParas)
             {
                 _ = type switch
@@ -876,6 +1126,28 @@ namespace PiWpfUi
             if (para.Type != type) return false;
             return true;
         }
+
+        // 正则提取：根据 regex_mode 动态切换 start/end 的显示名与 end 类型
+        private void UpdateRegexExtractParamUI()
+        {
+            if (WorkType != WorkType.RegexExtract) return;
+
+            bool regexMode = false;
+            if (Parameter.TryGetValue("regex_mode", out var rm) && rm?.Type == CheeseParaType.Bool && rm.Bool.HasValue)
+            {
+                regexMode = rm.Bool.Value;
+            }
+
+            if (Parameter.TryGetValue("start", out var start))
+            {
+                start.Name = regexMode ? "正则表达式" : "开始";
+            }
+            if (Parameter.TryGetValue("end", out var end))
+            {
+                end.Name = regexMode ? "第几个提取项" : "结束";
+                end.Type = regexMode ? CheeseParaType.Int : CheeseParaType.String;
+            }
+        }
         #endregion
     }
 
@@ -994,6 +1266,10 @@ namespace PiWpfUi
         OutHttp,
         Merge,
         TestPopup,
+        RegexReplace,
+        RegexExtract,
+        Contains,
+        FileWriter,
     }
 
     public enum OutType
@@ -1030,6 +1306,78 @@ namespace PiWpfUi
             Description = "合并芝士输出时使用的拼接字符串",
             Type = CheeseParaType.String,
             String = "",
+        };
+
+        public readonly static CheesePara RegexMode = new()
+        {
+            Name = "正则模式",
+            Description = "true 时按正则表达式处理；false 时按字面字符串处理",
+            Type = CheeseParaType.Bool,
+            Bool = false,
+        };
+        public readonly static CheesePara RegexSearch = new()
+        {
+            Name = "检索",
+            Description = "正则表达式，匹配要检索的内容",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara RegexReplacement = new()
+        {
+            Name = "替换为",
+            Description = "要替换成的文本，字面替换",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara RegexOccurrence = new()
+        {
+            Name = "第几项",
+            Description = "替换/提取第几个匹配；<=0 表示全部，默认0",
+            Type = CheeseParaType.Int,
+            Int = 0,
+        };
+        public readonly static CheesePara ExtractStart = new()
+        {
+            Name = "开始",
+            Description = "开始字符串（字面匹配；提取时从第一个开始串之后取，不处理嵌套）",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara ExtractEnd = new()
+        {
+            Name = "结束",
+            Description = "结束字符串（字面匹配；取第一个结束串之前的内容，不处理嵌套）",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara ExtractOutputList = new()
+        {
+            Name = "输出为列表",
+            Description = "true 每个结果作为独立列表项；false 多个结果合并为一个字符串",
+            Type = CheeseParaType.Bool,
+            Bool = true,
+        };
+        public readonly static CheesePara ContainsKeyword = new()
+        {
+            Name = "包含内容",
+            Description = "要判断是否包含的字符串或正则表达式",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+
+        public readonly static CheesePara FileWriterPath = new()
+        {
+            Name = "写入地址",
+            Description = "要写入的文件完整路径",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara FileWriterAppend = new()
+        {
+            Name = "追加写入",
+            Description = "true 追加；false 覆盖",
+            Type = CheeseParaType.Bool,
+            Bool = false,
         };
         /// <summary>
         /// clone parameter
@@ -1120,6 +1468,70 @@ namespace PiWpfUi
             OutType = OutType.Any,
         };
 
+        public readonly static BaseCheese RegexReplace = new()
+        {
+            Name = "正则替换",
+            Input = new() { ["input"] = new CheesePort(true) },
+            Output = new() { ["output"] = new CheesePort(false) },
+            WaitType = WaitType.Any,
+            WorkType = WorkType.RegexReplace,
+            OutType = OutType.Any,
+            Parameter = new()
+            {
+                ["search"] = CP(RegexSearch),
+                ["replace"] = CP(RegexReplacement),
+                ["occurrence"] = CP(RegexOccurrence),
+                ["regex_mode"] = CP(RegexMode),
+            }
+        };
+
+        public readonly static BaseCheese RegexExtract = new()
+        {
+            Name = "正则提取",
+            Input = new() { ["input"] = new CheesePort(true) },
+            Output = new() { ["output"] = new CheesePort(false) },
+            WaitType = WaitType.Any,
+            WorkType = WorkType.RegexExtract,
+            OutType = OutType.Any,
+            Parameter = new()
+            {
+                ["start"] = CP(ExtractStart),
+                ["end"] = CP(ExtractEnd),
+                ["occurrence"] = CP(RegexOccurrence),
+                ["output_list"] = CP(ExtractOutputList),
+                ["regex_mode"] = CP(RegexMode),
+            }
+        };
+
+        public readonly static BaseCheese Contains = new()
+        {
+            Name = "包含",
+            Input = new() { ["input"] = new CheesePort(true) },
+            Output = new() { ["result"] = new CheesePort(false) },
+            WaitType = WaitType.Any,
+            WorkType = WorkType.Contains,
+            OutType = OutType.Any,
+            Parameter = new()
+            {
+                ["keyword"] = CP(ContainsKeyword),
+                ["regex_mode"] = CP(RegexMode),
+            }
+        };
+
+        public readonly static BaseCheese FileWriter = new()
+        {
+            Name = "写入文件",
+            Input = new() { ["input"] = new CheesePort(true) },
+            WaitType = WaitType.Any,
+            WorkType = WorkType.FileWriter,
+            OutType = OutType.Any,
+            Parameter = new()
+            {
+                ["path"] = CP(FileWriterPath),
+                ["append"] = CP(FileWriterAppend),
+            }
+        };
+
         /// <summary>
         /// clone cheese：模板本体不要直接给 UI，避免被改动污染
         /// </summary>
@@ -1140,6 +1552,10 @@ namespace PiWpfUi
             Clone(SystemTime),
             Clone(Merge),
             Clone(TestPopup),
+            Clone(RegexReplace),
+            Clone(RegexExtract),
+            Clone(Contains),
+            Clone(FileWriter),
         };
         #endregion 
     }
