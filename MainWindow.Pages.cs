@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Reflection.Metadata;
 using System.Runtime;
@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 
 namespace PiWpfUi;
 
@@ -28,6 +29,26 @@ public class MonoPage: ObservableObject
     }
 }
 
+public class LLMMessageItem : ObservableObject
+{
+    private string _role = "user";
+    public string Role { get => _role; set => SetProperty(ref _role, value); }
+
+    private string _text = "";
+    public string Text { get => _text; set => SetProperty(ref _text, value); }
+}
+
+public class CheeseTemplateItemTemplateSelector : DataTemplateSelector
+{
+    public DataTemplate? ButtonTemplate { get; set; }
+    public DataTemplate? CardTemplate { get; set; }
+
+    public override DataTemplate SelectTemplate(object item, DependencyObject container)
+    {
+        return item is BaseCheese ? CardTemplate! : ButtonTemplate!;
+    }
+}
+
 public partial class MainWindow
 {
     // ===== 字段（页面管理）=====
@@ -41,6 +62,10 @@ public partial class MainWindow
 
     // 对象
     MonoPage? CurrentPage = null;//当前显示的页面
+
+    // LLM 配置页数据
+    ObservableCollection<LLMMessageItem> LLMMessageUI = new();
+    BaseCheese? LLMConfigCheese = null;
 
     #region 页面管理
     // 切 session 时重建：主 page + 该 session 的 text 页
@@ -253,6 +278,113 @@ public partial class MainWindow
         MessageList.Visibility = Visiable(type == "page");
         TextPageView.Visibility = Visiable(type == "text");
         PIzzaPage.Visibility = Visiable(type == "pizza");
+        LLMConfigPage.Visibility = Visiable(type == "llm_config");
+    }
+    public void OpenLLMConfigPage(BaseCheese cheese)
+    {
+        LLMConfigCheese = cheese;
+        LLMMessageUI.Clear();
+
+        if (cheese.WorkDraft.TryGetValue("default", out var list))
+        {
+            foreach (var json in list)
+            {
+                try
+                {
+                    var msg = JsonSerializer.Deserialize<BasicMessage>(json);
+                    if (msg != null) LLMMessageUI.Add(new LLMMessageItem { Role = string.IsNullOrEmpty(msg.Role) ? "user" : msg.Role.ToLowerInvariant(), Text = msg.Text });
+                }
+                catch { }
+            }
+        }
+
+        string remark = "";
+        if (cheese.Parameter.TryGetValue("remark", out var remarkPara) && remarkPara?.Type == CheeseParaType.String)
+            remark = remarkPara.String ?? "";
+
+        string configTitle = string.IsNullOrWhiteSpace(remark)
+            ? (string.IsNullOrWhiteSpace(cheese.Name) ? "LLM配置" : cheese.Name + " - LLM配置")
+            : remark + " LLM";
+
+        var page = new MonoPage
+        {
+            type = "llm_config",
+            sessionId = Last.SessionPath,
+            title = configTitle,
+            file_path = cheese.Id // 复用 file_path 存 LLM 芝士 Id
+        };
+        LLMConfigTitle.Text = configTitle;
+        OpenPage(Last.SessionPath, page);
+    }
+
+    public void LLMConfigButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not BaseCheese cheese) return;
+        OpenLLMConfigPage(cheese);
+    }
+
+    public void LLMConfigAdd_Click(object sender, RoutedEventArgs e)
+    {
+        string role = ((LLMConfigRolePicker.SelectedValue as string) ?? "user").ToLowerInvariant();
+        LLMMessageUI.Add(new LLMMessageItem { Role = role, Text = "" });
+        WriteLLMConfigToCheese();
+    }
+
+    public void LLMConfigRole_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is ComboBox cb)
+            cb.GetBindingExpression(ComboBox.SelectedValueProperty)?.UpdateSource();
+        WriteLLMConfigToCheese();
+    }
+
+    public void LLMConfigText_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox tb)
+            tb.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+        WriteLLMConfigToCheese();
+    }
+
+    public void LLMConfigMessage_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+
+        if ((Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) != 0)
+        {
+            // Shift+Enter / Ctrl+Enter：换行
+            if (sender is TextBox tb) tb.AppendText("\n");
+            e.Handled = true;
+        }
+
+        else
+        {
+            // Enter：提交
+            e.Handled = true;
+            if (sender is TextBox tb2)
+            {
+                tb2.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+                Keyboard.ClearFocus();
+            }
+            WriteLLMConfigToCheese();
+        }
+    }
+
+    public void LLMConfigRemove_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b || b.DataContext is not LLMMessageItem item) return;
+        LLMMessageUI.Remove(item);
+        WriteLLMConfigToCheese();
+    }
+
+    private void WriteLLMConfigToCheese()
+    {
+        if (LLMConfigCheese == null) return;
+        var list = new List<string>();
+        foreach (var item in LLMMessageUI)
+        {
+            list.Add(JsonSerializer.Serialize(new BasicMessage(string.IsNullOrEmpty(item.Role) ? "user" : item.Role.ToLowerInvariant(), item.Text)));
+        }
+        LLMConfigCheese.WorkDraft["default"] = list;
+        SaveCurrentPizzaGraph();
     }
 
     public void PageClose_Click(object sender, RoutedEventArgs e)

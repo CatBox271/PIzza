@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
@@ -23,7 +24,7 @@ public partial class MainWindow : Window
 
     // 集合类
     ObservableCollection<SessionItem> SessionUI = new() { new("新建对话") };//左侧栏会话列表
-    ObservableCollection<BasicMessageItem> MessageUI = new();//对话列表UI
+    ObservableCollection<BasicMessage> MessageUI = new();//对话列表UI
 
     public static MainWindow Instance;
     // 委托
@@ -50,7 +51,11 @@ public partial class MainWindow : Window
         MessageList.ItemsSource = MessageUI;
         PageTabBar.ItemsSource = PageUI;//顶部tab栏页面
         CheeseCanvas.ItemsSource = CheeseUI;//PIzza积木画布
+        LLMConfigList.ItemsSource = LLMMessageUI;//LLM配置页消息列表
         ConnectionLines.ItemsSource = ConnectionUI;//PIzza连线层
+        var templateItems = new List<object> { "__HEADER__" };
+        templateItems.AddRange(CheeseTemplate.Display);
+        CheeseTemplateList.ItemsSource = templateItems;
         State();
     }
 

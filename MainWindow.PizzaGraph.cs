@@ -58,9 +58,10 @@ namespace PiWpfUi
         }
     }
 
-    public class CheesePort
+    public class CheesePort : ObservableObject
     {
-        public bool visiblity { get; set; } = true;
+        private bool _visiblity = true;
+        public bool visiblity { get => _visiblity; set => SetProperty(ref _visiblity, value); }
         public string color { get; set; } = "Cyan";
         public CheesePort()
         { 
@@ -171,6 +172,8 @@ namespace PiWpfUi
         public WorkType WorkType { get; set; }//工作类型
         public Dictionary<string, List<string>> WorkDraft { get; set; } = new();//工作草稿,也相当于参数
         public OutType OutType { get; set; }
+        // LLM 运行锁：endurable 模式下一次只跑一个请求（本地私有字段，不序列化）
+        private bool _llmRunning = false;
 
         // 输入端口数据变化时的回调（PortAdd 且 input == true 时触发）
         [JsonIgnore]
@@ -211,7 +214,7 @@ namespace PiWpfUi
             AttachParameterDictionary(_parameter);
         }
 
-        public bool GetNormalPortCache(bool input, string port, out List<string>? cache)
+        public bool GetTruePortCache(bool input, string port, out List<string>? cache)
         {
             if (!GetPortCache(input, port, out cache) || cache!.Count == 0) return false;
             return true;
@@ -253,7 +256,7 @@ namespace PiWpfUi
             if (input) WhileImportChange?.Invoke();
         }
 
-        public void PortAdd(bool input, string port, string item)
+        public void SetPort(bool input, string port, string item)
         {
             if (!GetPortCache(input, port, out var cache)) return;
             cache!.Add(item);
@@ -281,8 +284,8 @@ namespace PiWpfUi
 
         #region draft
         //在写外部新建Cheese的时候一定要告知不能用default做端口名
+        //原生的方法经历不要新建，为了给外部的留
         private const string default_work_key = "default";
-        private const string merge_buffer_key = "__merge_buffer";
 
         public void AddWorkDraft(string add, string key = default_work_key)
         {
@@ -307,16 +310,18 @@ namespace PiWpfUi
             if (GetWorkDraft(out var draft, from) && draft != null)
             {
                 AddWorkDraft(draft, to);
-                ClearWorkDraft(from);
+                WorkDraftClear(from);
                 return true;
             }
             return false;
         }
-        private void ClearWorkDraft(string key = default_work_key)
+        private void WorkDraftClear(string key = default_work_key)
         {
             WorkDraft[key]?.Clear();
         }
-
+        /// <summary>
+        /// draft非空
+        /// </summary>
         private bool GetWorkDraft(out List<string>? draft, string key = default_work_key)
         {
             if (!WorkDraft.TryGetValue(key, out draft))
@@ -487,6 +492,7 @@ namespace PiWpfUi
                     WorkType.RegexExtract => WorkRegexExtract(),
                     WorkType.Contains => WorkContains(),
                     WorkType.FileWriter => WorkFileWriter(),
+                    WorkType.LLM=>WorkLLM(),
                     _ => false,
                 };
 
@@ -498,12 +504,128 @@ namespace PiWpfUi
             }
             return get_result;
         }
+        private bool WorkLLM()
+        {
+            //根据WorkDraft里存的内容运行
+            //有一个text输入。reset输入
 
+            if (GetTruePortCache(true, "reset", out List<string>? resets))
+            {
+                if (resets!.Contains("true"))
+                {
+                    //重置
+                    PortClear(true, "reset");
+                    WorkDraftClear("messages");
+                }
+            }
 
+            if (!GetTruePortCache(true, "text", out var texts) || texts!.Count == 0) return false;
 
+            string text = texts[0];
+            texts.RemoveAt(0);
+            bool endurable = GetPara("endurable", CheeseParaType.Bool, out CheesePara? para) && (para!.Bool ?? false);
+
+            if (endurable)
+            {
+                //一次只能跑一个 LLM 请求
+                if (_llmRunning) return false;
+                _llmRunning = true;
+
+                List<BasicMessage> messages = new();
+                if (!LLMLoad("messages", ref messages))
+                {
+                    if (!LLMLoad(default_work_key, ref messages)) messages.Clear();
+                }
+                messages.Add(new BasicMessage("user", text));
+                _ = WorkStartLLMClient(messages);
+                return true;
+            }
+
+            //一次性对话：不维护历史
+            List<BasicMessage> oneShot = new();
+            if (!LLMLoad(default_work_key, ref oneShot)) oneShot.Clear();
+            oneShot.Add(new BasicMessage("user", text));
+            _ = WorkStartLLMClient(oneShot);
+            return true;
+        }
+        private bool LLMLoad(string key,ref List<BasicMessage> messages)
+        {
+            if (GetWorkDraft(out var jsons, key))
+            {
+                foreach (var json in jsons)
+                {
+                    try
+                    {
+                        var ms = JsonSerializer.Deserialize<BasicMessage>(json);
+                        if (ms != null) messages.Add(ms);
+                    }
+                    catch
+                    {
+                        MainWindow.LogError("LLMCheese读取时遭遇异常");
+                        continue;
+                    }
+                }
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        private async Task WorkStartLLMClient(List<BasicMessage> messages)
+        {
+            try
+            {
+                //LLM请求的参数是放在WorkDraft里的
+                if (!GetPara("model", CheeseParaType.String, out CheesePara? modelPara) || string.IsNullOrWhiteSpace(modelPara!.String))
+                {
+                    MainWindow.LogError("LLM未配置模型：Parameter[\"model\"] 不能为空");
+                    return;
+                }
+
+                    string model = modelPara.String!;
+
+                //默认只有deepseekAPI
+                bool? thinking = null;
+                if (GetPara("thinking", CheeseParaType.Bool, out CheesePara? thinkingPara))
+                    thinking = thinkingPara!.Bool;
+
+                string? reasoningEffort = null;
+                if (GetPara("reasoning_effort", CheeseParaType.Select, out CheesePara? effortPara))
+                    reasoningEffort = string.IsNullOrWhiteSpace(effortPara!.String) ? null : effortPara.String;
+
+                int? maxTokens = null;
+                if (GetPara("max_tokens", CheeseParaType.Int, out CheesePara? tokenPara) && tokenPara!.Int > 0)
+                    maxTokens = tokenPara.Int;
+
+                string? content = await DeepseekRequest.ChatAsync(model, messages, thinking, reasoningEffort, maxTokens);
+
+                if (!string.IsNullOrEmpty(content))
+                {
+                    SetPort(false, "output", content);
+
+                    //endurable：把 assistant 结果追加到 messages 历史
+                    if (GetPara("endurable", CheeseParaType.Bool, out CheesePara? para) && (para!.Bool ?? false))
+                    {
+                        AddWorkDraft(JsonSerializer.Serialize(new BasicMessage("assistant", content)), "messages");
+                    }
+
+                    DoOut();
+                }
+            }
+            catch (Exception e)
+            {
+                MainWindow.LogError(e.ToString());
+            }
+            finally
+            {
+                _llmRunning = false;
+            }
+        }
         private bool WorkUserMessage()
         {
-            if(!GetNormalPortCache(true, "user_input", out var result)) return false;
+            if(!GetTruePortCache(true, "user_input", out var result)) return false;
             PortAdd(false, "content", result!);
             PortClear(true, "user_input");
             return true;
@@ -511,25 +633,25 @@ namespace PiWpfUi
 
         private bool WorkText()
         {
-            if (!EnsurePara("text", CheeseParaType.String, out var text)) return false;
-            if (!EnsurePara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false))
+            if (!GetPara("text", CheeseParaType.String, out var text)) return false;
+            if (!GetPara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false))
             {
                 PortClear(true, "input");
             }
 
-            PortAdd(false, "output", text?.String ?? "");
+            SetPort(false, "output", text?.String ?? "");
             return true;
         }
 
         private bool WorkTime()
         {
             // 没有开启 Addition 时，输入只作为触发，用后清掉；开启时交给 DoAddition 统一追加
-            if (!EnsurePara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false))
+            if (!GetPara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false))
             {
                 PortClear(true, "入口");
             }
 
-            PortAdd(false, "出口", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            SetPort(false, "出口", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             return true;
         }
 
@@ -579,8 +701,8 @@ namespace PiWpfUi
 
         private bool WorkContains()
         {
-            if (!GetNormalPortCache(true, "input", out var input)) return false;
-            if (!EnsurePara("keyword", CheeseParaType.String, out var keyword) || string.IsNullOrEmpty(keyword!.String))
+            if (!GetTruePortCache(true, "input", out var input)) return false;
+            if (!GetPara("keyword", CheeseParaType.String, out var keyword) || string.IsNullOrEmpty(keyword!.String))
             {
                 PortClear(true, "input");
                 return false;
@@ -617,8 +739,8 @@ namespace PiWpfUi
 
         private bool WorkRegexReplace()
         {
-            if (!GetNormalPortCache(true, "input", out var input)) return false;
-            if (!EnsurePara("search", CheeseParaType.String, out var search) || string.IsNullOrEmpty(search!.String))
+            if (!GetTruePortCache(true, "input", out var input)) return false;
+            if (!GetPara("search", CheeseParaType.String, out var search) || string.IsNullOrEmpty(search!.String))
             {
                 PortClear(true, "input");
                 return false;
@@ -675,7 +797,7 @@ namespace PiWpfUi
 
         private bool WorkRegexExtract()
         {
-            if (!GetNormalPortCache(true, "input", out var input)) return false;
+            if (!GetTruePortCache(true, "input", out var input)) return false;
 
             bool regexMode = false;
             if (Parameter.TryGetValue("regex_mode", out var rm) && rm?.Type == CheeseParaType.Bool && rm.Bool.HasValue)
@@ -693,12 +815,12 @@ namespace PiWpfUi
             var output = new List<string>();
             if (regexMode)
             {
-                if (!EnsurePara("start", CheeseParaType.String, out var start) || string.IsNullOrEmpty(start!.String))
+                if (!GetPara("start", CheeseParaType.String, out var start) || string.IsNullOrEmpty(start!.String))
                 {
                     PortClear(true, "input");
                     return false;
                 }
-                if (!EnsurePara("end", CheeseParaType.Int, out var end) || !end!.Int.HasValue)
+                if (!GetPara("end", CheeseParaType.Int, out var end) || !end!.Int.HasValue)
                 {
                     PortClear(true, "input");
                     return false;
@@ -734,12 +856,12 @@ namespace PiWpfUi
             }
             else
             {
-                if (!EnsurePara("start", CheeseParaType.String, out var start) || string.IsNullOrEmpty(start!.String))
+                if (!GetPara("start", CheeseParaType.String, out var start) || string.IsNullOrEmpty(start!.String))
                 {
                     PortClear(true, "input");
                     return false;
                 }
-                if (!EnsurePara("end", CheeseParaType.String, out var end) || string.IsNullOrEmpty(end!.String))
+                if (!GetPara("end", CheeseParaType.String, out var end) || string.IsNullOrEmpty(end!.String))
                 {
                     PortClear(true, "input");
                     return false;
@@ -773,8 +895,8 @@ namespace PiWpfUi
 
         private bool WorkFileWriter()
         {
-            if (!GetNormalPortCache(true, "input", out var input)) return false;
-            if (!EnsurePara("path", CheeseParaType.String, out var path) || string.IsNullOrWhiteSpace(path!.String))
+            if (!GetTruePortCache(true, "input", out var input)) return false;
+            if (!GetPara("path", CheeseParaType.String, out var path) || string.IsNullOrWhiteSpace(path!.String))
             {
                 PortClear(true, "input");
                 return false;
@@ -803,31 +925,33 @@ namespace PiWpfUi
                 return false;
             }
         }
-
+        /// <summary>
+        /// 合并，使用
+        /// </summary>
+        /// <returns></returns>
         private bool WorkMerge()
         {
             // 1. content 先进入缓冲
-            if (GetNormalPortCache(true, "content", out var content))
+            if (GetTruePortCache(true, "content", out var content))
             {
-                AddWorkDraft(content!, merge_buffer_key);
+                AddWorkDraft(content!);
                 PortClear(true, "content");
             }
 
             // 2. finish 信号触发输出
-            if (GetNormalPortCache(true, "finish", out var finish))
+            if (GetTruePortCache(true, "finish", out var finish))
             {
                 PortClear(true, "finish");
 
                 string separator = "";
-                if (Parameter.TryGetValue("separator", out var sp) && sp?.Type == CheeseParaType.String && sp.String != null)
+                if (GetPara("separator", CheeseParaType.String, out CheesePara? sp))
                 {
-                    separator = sp.String;
+                    separator = sp!.String ?? "";
                 }
-
-                if (GetWorkDraft(out var buffer, merge_buffer_key) && buffer != null && buffer.Count > 0)
+                if (GetWorkDraft(out var buffer) && buffer != null && buffer.Count > 0)
                 {
-                    PortAdd(false, "combined", string.Join(separator, buffer));
-                    ClearWorkDraft(merge_buffer_key);
+                    SetPort(false, "combined", string.Join(separator, buffer));
+                    WorkDraftClear();
                 }
             }
 
@@ -836,7 +960,7 @@ namespace PiWpfUi
 
         private bool WorkTestPopup()
         {
-            if (!GetNormalPortCache(true, "input", out var input)) return false;
+            if (!GetTruePortCache(true, "input", out var input)) return false;
 
             string text = string.Join(Environment.NewLine, input!);
             PortClear(true, "input");
@@ -866,7 +990,7 @@ namespace PiWpfUi
             bool worked = false;
 
             // 流式口：原始 PI JSON 行，逐行分析、落盘、按条件刷 UI
-            if (GetNormalPortCache(true, "stream_result", out var stream))
+            if (GetTruePortCache(true, "stream_result", out var stream))
             {
                 foreach (var line in stream!)
                 {
@@ -877,7 +1001,7 @@ namespace PiWpfUi
             }
 
             // 非流式口：保持原样不动
-            if (GetNormalPortCache(true, "result", out var result))
+            if (GetTruePortCache(true, "result", out var result))
             {
                 foreach (var item in result!)
                 {
@@ -888,15 +1012,25 @@ namespace PiWpfUi
                 worked = true;
             }
 
+            // 用户输入口：把文本作为 user 消息显示（并写入 PIzza 会话文件）
+            if (GetTruePortCache(true, "用户输入", out var userInput))
+            {
+                foreach (var item in userInput!)
+                {
+                    main.SavePizzaConversation(Bread?.sessionPath, "user", item);
+                    main.DisplayUserMessage(item);
+                }
+                PortClear(true, "用户输入");
+                worked = true;
+            }
+
             return worked;
         }
-
-       
 
         //一直循环到结束
         private bool WorkAgentStream()
         {
-            if (!GetNormalPortCache(true, "content", out var result)) return false;
+            if (!GetTruePortCache(true, "content", out var result)) return false;
             if (GetWorkDraft(out var draft) && draft!.Count != 0)
             {
                 //还需要实际看一下有没有PI的后台，如果没有就放行
@@ -942,22 +1076,22 @@ namespace PiWpfUi
                 {
                     line = await client.process!.StandardOutput.ReadLineAsync();
                     if (MainWindow.AnalysisPISettled(line)) break;
-                    PortAdd(false, "stream", line!);//AnalysisPISettled后不可能为null
+                    SetPort(false, "stream", line!);//AnalysisPISettled后不可能为null
                     DoOut();   // 触发下游加热/传递
                 }
-                PortAdd(false, "finish", "true");
+                SetPort(false, "finish", "true");
                 DoOut();
 
-                ClearWorkDraft();
+                WorkDraftClear();
             }
             catch (Exception e)
             {
                 MessageBox.Show(e.ToString());
 
-                PortAdd(false, "finish", "false");
+                SetPort(false, "finish", "false");
                 DoOut();
 
-                ClearWorkDraft();
+                WorkDraftClear();
             }
         }
         #endregion
@@ -968,7 +1102,7 @@ namespace PiWpfUi
         {
             try
             {
-                if (!EnsurePara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false)) return;
+                if (!GetPara("addition", CheeseParaType.Bool, out var para) || !(para!.Bool ?? false)) return;
 
                 bool front = true;
                 if (Parameter.TryGetValue("addition_fore_back", out var fb) && fb != null)
@@ -1082,10 +1216,13 @@ namespace PiWpfUi
         private List<string>? OutHttp() { return null; }
         #endregion
 
+        //选项后期可以优化为缓存结果，因为运行中不会被改变
+
         #region Para
         public void DoPara()
         {
             if (WorkType == WorkType.RegexExtract) UpdateRegexExtractParamUI();
+            if (WorkType == WorkType.LLM) UpdateLLMParamUI();
             foreach (var type in DealParas)
             {
                 _ = type switch
@@ -1097,7 +1234,7 @@ namespace PiWpfUi
         }
         private bool InputSpawner()
         {
-            if (!EnsurePara("input_count", CheeseParaType.Int, out CheesePara? para)) return false;
+            if (!GetPara("input_count", CheeseParaType.Int, out CheesePara? para)) return false;
             int count = para!.Int ?? 0;
             //暴力执行
             int delta = Input.Count - count;
@@ -1131,8 +1268,6 @@ namespace PiWpfUi
             }
             return true;
         }
-
-        #endregion
 
         #region 参数
         public List<DealParaType> DealParas { get; set; } = new();
@@ -1204,8 +1339,10 @@ namespace PiWpfUi
             if (e.PropertyName == nameof(CheesePara.ParaDealer)) ScanDealParas();
             DoPara();
         }
-
-        private bool EnsurePara(string key , CheeseParaType type ,out CheesePara? para)
+        /// <summary>
+        /// para 不可能为空
+        /// </summary>
+        private bool GetPara(string key, CheeseParaType type, out CheesePara? para)
         {
             para = null;
             if (!Parameter.TryGetValue(key, out para) || para == null) return false;
@@ -1234,139 +1371,28 @@ namespace PiWpfUi
                 end.Type = regexMode ? CheeseParaType.Int : CheeseParaType.String;
             }
         }
-        #endregion
-    }
 
-    #region Para
-    public enum DealParaType
-    {
-        InputSpawner,
-        Addition,
-        OutProgram,
-        OutHttp,
-    }
-
-    public enum CheeseParaType
-    { 
-        String,
-        Int,
-        Float,
-        Bool,
-    }
-    public class CheesePara : ObservableObject
-    {
-        private string _name = "";
-        public string Name { get => _name; set => SetProperty(ref _name, value); }
-
-        private string? _description = null;
-        public string? Description { get => _description; set => SetProperty(ref _description, value); }//鼠标移动上去后显示
-
-        private CheeseParaType _type;
-        public CheeseParaType Type { get => _type; set => SetProperty(ref _type, value); }
-
-        private string? _string = null;
-        public string? String { get => _string; set => SetProperty(ref _string, value); }
-
-        private int? _int = null;
-        public int? Int { get => _int; set => SetProperty(ref _int, value); }
-
-        private float? _float = null;
-        public float? Float { get => _float; set => SetProperty(ref _float, value); }
-
-        private bool? _bool = null;
-        public bool? Bool { get => _bool; set => SetProperty(ref _bool, value); }
-
-        private List<DealParaType>? _paraDealer = null;
-        public List<DealParaType>? ParaDealer { get => _paraDealer; set => SetProperty(ref _paraDealer, value); }//读取时自动加载添加处理方案
-    }
-
-    // 可通知的参数字典：Add/Remove/索引器赋值/Clear 时触发 Changed
-    public class CheeseParaDictionary : Dictionary<string, CheesePara>
-    {
-        public event Action? Changed;
-
-        public new void Add(string key, CheesePara value)
+        // LLM：只有勾选上下文持久化才显示 reset 口；取消时去掉挂到 reset 口的连接
+        private void UpdateLLMParamUI()
         {
-            base.Add(key, value);
-            Changed?.Invoke();
-        }
+            if (WorkType != WorkType.LLM) return;
 
-        public new CheesePara this[string key]
-        {
-            get => base[key];
-            set
+            bool endurable = GetPara("endurable", CheeseParaType.Bool, out var para) && (para!.Bool ?? false);
+
+            if (Input.TryGetValue("reset", out var resetPort))
             {
-                var added = !TryGetValue(key, out var old);
-                base[key] = value;
-                if (added || !ReferenceEquals(old, value)) Changed?.Invoke();
+                resetPort.visiblity = endurable;
+            }
+
+            if (!endurable)
+            {
+                MainWindow.Instance?.RemoveIncomingLinkPublic(this, "reset");
             }
         }
+        #endregion
 
-        public new bool TryAdd(string key, CheesePara value)
-        {
-            if (!base.TryAdd(key, value)) return false;
-            Changed?.Invoke();
-            return true;
-        }
-
-        public new bool Remove(string key)
-        {
-            if (!base.Remove(key)) return false;
-            Changed?.Invoke();
-            return true;
-        }
-
-        public new void Clear()
-        {
-            if (Count == 0) return;
-            base.Clear();
-            Changed?.Invoke();
-        }
+        #endregion
     }
-    #endregion
-
-    #region 芝士类型
-    public enum WaitType
-    {
-        Any,
-        All,
-        Assign,//在WaitDraft里指定必须等的项目
-        //以上都有C#原生函数接入做模版
-        OutProgram,
-        OutHttp,
-    }
-
-    //工作类型
-    public enum WorkType
-    { 
-        UserMessage,
-        MessageDisplay,
-        Agent,
-        AgentStream,
-        InputCombiner,
-        Text,
-        Time,
-        Clock,
-        //以上都有C#原生函数接入做模版
-        OutProgram,
-        OutHttp,
-        Merge,
-        TestPopup,
-        RegexReplace,
-        RegexExtract,
-        Contains,
-        FileWriter,
-    }
-
-    public enum OutType
-    {
-        Any,//任何Output
-        All,//等待所有Output
-        //以上都有C#原生函数接入做模版
-        OutProgram,
-        OutHttp,
-    }
-    #endregion
 
     public class CheeseTemplate
     {
@@ -1476,6 +1502,52 @@ namespace PiWpfUi
         /// <summary>
         /// clone parameter
         /// </summary>
+        public readonly static CheesePara LLMModel = new()
+        {
+            Name = "模型",
+            Description = "DeepSeek 模型名",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara LLMEndurable = new()
+        {
+            Name = "上下文持久化",
+            Description = "true 维护历史消息，false 一次性对话",
+            Type = CheeseParaType.Bool,
+            Bool = false,
+        };
+        public readonly static CheesePara LLMRemark = new()
+        {
+            Name = "备注",
+            Description = "显示名称，如：代码生成",
+            Type = CheeseParaType.String,
+            String = "",
+        };
+        public readonly static CheesePara LLMThinking = new()
+        {
+            Name = "思考模式",
+            Description = "true 启用思考；false 关闭思考",
+            Type = CheeseParaType.Bool,
+            Bool = true,
+        };
+        public readonly static CheesePara LLMReasoningEffort = new()
+        {
+            Name = "思考强度",
+            Description = "low / high / max；关闭思考时不生效",
+            Type = CheeseParaType.Select,
+            String = "high",
+            Options = new List<string> { "low", "high", "max" },
+        };
+        public readonly static CheesePara LLMMaxTokens = new()
+        {
+            Name = "MaxToken",
+            Description = "最大输出 token 数",
+            Type = CheeseParaType.Int,
+            Int = 4096,
+        };
+
+
+
         public static CheesePara CP(CheesePara template)
         {
             var json = JsonSerializer.Serialize(template);
@@ -1502,7 +1574,7 @@ namespace PiWpfUi
         };
         public readonly static BaseCheese MessageDisplay = new() {
             Name = "消息显示",
-            Input = new() { ["result"] = new CheesePort (true), ["stream_result"] = new CheesePort (true) },
+            Input = new() { ["result"] = new CheesePort (true), ["stream_result"] = new CheesePort (true), ["用户输入"] = new CheesePort (true) },
             WaitType = WaitType.Any,
             WorkType = WorkType.MessageDisplay 
         };
@@ -1536,9 +1608,6 @@ namespace PiWpfUi
                 ["addition_fore_back"] = CP(AdditionFB),
             }
         };
-
-
-
         public readonly static BaseCheese Merge = new()
         {
             Name = "合并芝士",
@@ -1552,7 +1621,6 @@ namespace PiWpfUi
                 ["separator"] = CP(MergeSeparator),
             }
         };
-
         public readonly static BaseCheese TestPopup = new()
         {
             Name = "测试弹窗",
@@ -1561,7 +1629,6 @@ namespace PiWpfUi
             WorkType = WorkType.TestPopup,
             OutType = OutType.Any,
         };
-
         public readonly static BaseCheese RegexReplace = new()
         {
             Name = "正则替换",
@@ -1578,7 +1645,6 @@ namespace PiWpfUi
                 ["regex_mode"] = CP(RegexMode),
             }
         };
-
         public readonly static BaseCheese RegexExtract = new()
         {
             Name = "正则提取",
@@ -1596,7 +1662,6 @@ namespace PiWpfUi
                 ["regex_mode"] = CP(RegexMode),
             }
         };
-
         public readonly static BaseCheese Contains = new()
         {
             Name = "包含",
@@ -1611,7 +1676,6 @@ namespace PiWpfUi
                 ["regex_mode"] = CP(RegexMode),
             }
         };
-
         public readonly static BaseCheese Text = new()
         {
             Name = "文本",
@@ -1627,7 +1691,6 @@ namespace PiWpfUi
                 ["addition_fore_back"] = CP(AdditionFB),
             }
         };
-
         public readonly static BaseCheese FileWriter = new()
         {
             Name = "写入文件",
@@ -1639,6 +1702,24 @@ namespace PiWpfUi
             {
                 ["path"] = CP(FileWriterPath),
                 ["append"] = CP(FileWriterAppend),
+            }
+        };
+        public readonly static BaseCheese LLM = new()
+        {
+            Name = "LLM请求",
+            Input = new() { ["text"] = new CheesePort(true), ["reset"] = new CheesePort(true) },
+            Output = new() { ["output"] = new CheesePort(true) },
+            WaitType = WaitType.Any,
+            WorkType = WorkType.LLM,
+            OutType = OutType.Any,
+            Parameter = new()
+            {
+                ["model"] = CP(LLMModel),
+                ["endurable"] = CP(LLMEndurable),
+                ["remark"] = CP(LLMRemark),
+                ["thinking"] = CP(LLMThinking),
+                ["reasoning_effort"] = CP(LLMReasoningEffort),
+                ["max_tokens"] = CP(LLMMaxTokens),
             }
         };
 
@@ -1667,6 +1748,7 @@ namespace PiWpfUi
             Clone(Contains),
             Clone(Text),
             Clone(FileWriter),
+            Clone(LLM),
         };
         #endregion 
     }
@@ -1863,7 +1945,7 @@ namespace PiWpfUi
             }
             foreach (var cheese in cheeselist)
             {
-                cheese.PortAdd(true, "user_input", content);
+                cheese.SetPort(true, "user_input", content);
             }
         }
         public void AddInputTo(BaseCheese cheese, string port, List<string> items)
@@ -1948,6 +2030,8 @@ namespace PiWpfUi
             }
 
             NormalizePizzaGraphs();
+            EnsureLLMParameterDefaults();
+            EnsureMessageDisplayDefaults();
         }
 
         // 修复已加载的图：null 的 PizzaBread 补默认图
@@ -1963,6 +2047,61 @@ namespace PiWpfUi
             if (changed) SavePizzaGraphs();
         }
 
+
+        // 老 LLM 芝士补齐新增参数：备注/思考模式/思考强度/MaxToken
+        private void EnsureLLMParameterDefaults()
+        {
+            bool changed = false;
+            foreach (var bread in PizzaGraphs.Values)
+            {
+                if (bread?.Cheeses == null) continue;
+                foreach (var cheese in bread.Cheeses)
+                {
+                    if (cheese.WorkType != WorkType.LLM) continue;
+                    if (!cheese.Parameter.ContainsKey("remark"))
+                    {
+                        cheese.Parameter["remark"] = CheeseTemplate.CP(CheeseTemplate.LLMRemark);
+                        changed = true;
+                    }
+                    if (!cheese.Parameter.ContainsKey("thinking"))
+                    {
+                        cheese.Parameter["thinking"] = CheeseTemplate.CP(CheeseTemplate.LLMThinking);
+                        changed = true;
+                    }
+                    if (!cheese.Parameter.ContainsKey("reasoning_effort"))
+                    {
+                        cheese.Parameter["reasoning_effort"] = CheeseTemplate.CP(CheeseTemplate.LLMReasoningEffort);
+                        changed = true;
+                    }
+                    if (!cheese.Parameter.ContainsKey("max_tokens"))
+                    {
+                        cheese.Parameter["max_tokens"] = CheeseTemplate.CP(CheeseTemplate.LLMMaxTokens);
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) SavePizzaGraphs();
+        }
+
+        // 老 MessageDisplay 芝士补齐新增端口：用户输入
+        private void EnsureMessageDisplayDefaults()
+        {
+            bool changed = false;
+            foreach (var bread in PizzaGraphs.Values)
+            {
+                if (bread?.Cheeses == null) continue;
+                foreach (var cheese in bread.Cheeses)
+                {
+                    if (cheese.WorkType != WorkType.MessageDisplay) continue;
+                    if (!cheese.Input.ContainsKey("用户输入"))
+                    {
+                        cheese.Input["用户输入"] = new CheesePort(true);
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) SavePizzaGraphs();
+        }
         // 没有任何会话图时：为所有已有会话 + LastPath 重建默认图
         private void ResetPizzaGraphsToDefault()
         {
@@ -2400,6 +2539,14 @@ namespace PiWpfUi
             {
                 port.link.RemoveAll(l => l.TargetId == target.Id && l.TargetPort == targetPort);
             }
+
+        }
+
+        public void RemoveIncomingLinkPublic(BaseCheese target, string targetPort)
+        {
+            if (FindIncomingLink(target, targetPort) == null) return;
+            RemoveIncomingLink(target, targetPort);
+            RefreshConnections();
         }
 
         private void AddLink(BaseCheese source, string sourcePort, BaseCheese target, string targetPort)

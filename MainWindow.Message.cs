@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
@@ -25,8 +25,8 @@ public partial class MainWindow
     void ClearMessage()
     {
         MessageUI.Clear();
-        MessageUI.Add(new BasicMessageItem("Spacer", ""));   // 顶部占位
-        MessageUI.Add(new BasicMessageItem("Spacer", ""));   // 底部占位
+        MessageUI.Add(new BasicMessage("Spacer", ""));   // 顶部占位
+        MessageUI.Add(new BasicMessage("Spacer", ""));   // 底部占位
     }
 
     #region Pi事件上UI线程处理
@@ -53,7 +53,7 @@ public partial class MainWindow
 
         if (file_path != Last.SessionPath) return;
 
-        MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, list.Count - 1));
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessage(msg, list.Count - 1));
         ScrollToLatest();
     }
 
@@ -81,9 +81,9 @@ public partial class MainWindow
 
         int msgIndex = list.Count - 1;
         if (MessageUI.Count >= 3 && MessageUI[^2].MessageIndex == msgIndex)
-            MessageUI[^2] = new BasicMessageItem(msg, msgIndex);
+            MessageUI[^2] = new BasicMessage(msg, msgIndex);
         else
-            MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, msgIndex));
+            MessageUI.Insert(MessageUI.Count - 1, new BasicMessage(msg, msgIndex));
 
         ScrollToLatest();
     }
@@ -106,9 +106,9 @@ public partial class MainWindow
 
         int msgIndex = list.Count - 1;
         if (MessageUI.Count >= 3 && MessageUI[^2].MessageIndex == msgIndex)
-            MessageUI[^2] = new BasicMessageItem(msg, msgIndex);
+            MessageUI[^2] = new BasicMessage(msg, msgIndex);
         else
-            MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, msgIndex));
+            MessageUI.Insert(MessageUI.Count - 1, new BasicMessage(msg, msgIndex));
 
         ScrollToLatest();
     }
@@ -215,7 +215,20 @@ public partial class MainWindow
             return;
         }
 
-        MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem("assistant", text));
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessage("assistant", text));
+        ScrollToLatest();
+    }
+
+    // 给 MessageDisplay Cheese 用：把接收到的内容作为 user 消息显示到当前聊天区
+    public void DisplayUserMessage(string text)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => DisplayUserMessage(text));
+            return;
+        }
+
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessage("user", text));
         ScrollToLatest();
     }
 
@@ -665,7 +678,7 @@ public partial class MainWindow
 
         if (filePath != Last.SessionPath) return;
 
-        MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, msgIndex));
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessage(msg, msgIndex));
         ScrollToLatest();
     }
 
@@ -681,7 +694,7 @@ public partial class MainWindow
 
         if (MessageUI.Count >= 3 && MessageUI[^2].MessageIndex == msgIndex)
         {
-            MessageUI[^2] = new BasicMessageItem(msg, msgIndex);
+            MessageUI[^2] = new BasicMessage(msg, msgIndex);
             ScrollToLatest();
             return;
         }
@@ -690,13 +703,13 @@ public partial class MainWindow
         {
             if (MessageUI[i].MessageIndex == msgIndex)
             {
-                MessageUI[i] = new BasicMessageItem(msg, msgIndex);
+                MessageUI[i] = new BasicMessage(msg, msgIndex);
                 ScrollToLatest();
                 return;
             }
         }
 
-        MessageUI.Insert(MessageUI.Count - 1, new BasicMessageItem(msg, msgIndex));
+        MessageUI.Insert(MessageUI.Count - 1, new BasicMessage(msg, msgIndex));
         ScrollToLatest();
     }
 

@@ -1,4 +1,4 @@
-﻿<Window x:Class="PiWpfUi.MainWindow"
+<Window x:Class="PiWpfUi.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -21,15 +21,15 @@
             <local:MonoPage title="Text"/>
             <local:MonoPage title="Picture"/>
         </x:Array>
-        <x:Array x:Key="MessageTest" Type="{x:Type local:BasicMessageItem}">
-            <local:BasicMessageItem Text="你好" Role="user"/>
-            <local:BasicMessageItem Text="你好,很高兴见到你。我是一个智能AI，我可以聊天、写作、编程或是做你的智能助手。我是一个智能AI，我可以聊天、写作、编程或是做你的智能助手。" Role="assistant" Reasoning="The user says 快一点回答我 which means Answer me quickly in Chinese. They want a fast response. There's no actual question here, just a request for speed. I should respond quickly and briefly."/>
-            <local:BasicMessageItem Text="有Text没有Reasoning自动把【显示思考】隐藏" Role="assistant"/>
-            <local:BasicMessageItem Role="assistant">
-                <local:BasicMessageItem.Tools>
+        <x:Array x:Key="MessageTest" Type="{x:Type local:BasicMessage}">
+            <local:BasicMessage Text="你好" Role="user"/>
+            <local:BasicMessage Text="你好,很高兴见到你。我是一个智能AI，我可以聊天、写作、编程或是做你的智能助手。我是一个智能AI，我可以聊天、写作、编程或是做你的智能助手。" Role="assistant" Reasoning="The user says 快一点回答我 which means Answer me quickly in Chinese. They want a fast response. There's no actual question here, just a request for speed. I should respond quickly and briefly."/>
+            <local:BasicMessage Text="有Text没有Reasoning自动把【显示思考】隐藏" Role="assistant"/>
+            <local:BasicMessage Role="assistant">
+                <local:BasicMessage.Tools>
                     <local:ToolItem tool_name="bash" tool_exec="echo Hello" tool_result="error"/>
-                </local:BasicMessageItem.Tools>
-            </local:BasicMessageItem>
+                </local:BasicMessage.Tools>
+            </local:BasicMessage>
         </x:Array>
         <!--可复制文本-->
         <Style x:Key="MessageTextBox" TargetType="TextBox">
@@ -313,15 +313,62 @@
                                         </Style>
                                     </CheckBox.Style>
                                 </CheckBox>
+                                  <ComboBox Grid.Column="1" MinWidth="88" FontSize="11" ItemsSource="{Binding Options}" SelectedItem="{Binding String, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, NotifyOnSourceUpdated=True}" SourceUpdated="ParameterEditor_SourceUpdated">
+                                      <ComboBox.Style>
+                                          <Style TargetType="ComboBox">
+                                              <Setter Property="Visibility" Value="Collapsed"/>
+                                              <Style.Triggers>
+                                                  <DataTrigger Binding="{Binding Type}" Value="{x:Static local:CheeseParaType.Select}">
+                                                      <Setter Property="Visibility" Value="Visible"/>
+                                                  </DataTrigger>
+                                              </Style.Triggers>
+                                          </Style>
+                                      </ComboBox.Style>
+                                  </ComboBox>
                             </Grid>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
+                <Button DockPanel.Dock="Bottom" Content="LLM配置" Padding="8,3" Margin="6,3" Cursor="Hand" Click="LLMConfigButton_Click">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding WorkType}" Value="{x:Static local:WorkType.LLM}">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
                 <!--必需填充元素-->
                 <Border/>
             </DockPanel>
 
         </DataTemplate>
+        <DataTemplate x:Key="CheeseTemplateButtonTemplate">
+            <Button Content="加测试积木" Click="AddTestCheese_Click" Margin="10,10,10,5" HorizontalAlignment="Stretch"/>
+        </DataTemplate>
+        <DataTemplate x:Key="CheeseTemplateCardTemplate">
+            <Border Background="Beige" BorderBrush="#888" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,3" Cursor="Hand" ToolTip="点击添加到画布" MouseLeftButtonUp="CheeseTemplateDisplay_Click">
+                <StackPanel>
+                    <TextBlock Text="{Binding Name}" FontWeight="Bold" Foreground="#222"/>
+                    <TextBlock FontSize="10" Foreground="#666">
+                        <TextBlock.Text>
+                            <MultiBinding StringFormat="{}Wait:{0}  Work:{1}  Out:{2}">
+                                <Binding Path="WaitType"/>
+                                <Binding Path="WorkType"/>
+                                <Binding Path="OutType"/>
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+                    <TextBlock FontSize="10" Foreground="#666" Text="{Binding Parameter.Count, StringFormat=参数 {0} 个}"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+        <local:CheeseTemplateItemTemplateSelector x:Key="CheeseTemplateItemTemplateSelector"
+            ButtonTemplate="{StaticResource CheeseTemplateButtonTemplate}"
+            CardTemplate="{StaticResource CheeseTemplateCardTemplate}"/>
     </Window.Resources>
 
     
@@ -514,32 +561,8 @@
                     <DockPanel x:Name="PIzzaPage" Visibility="Visible" >
                         <!--右侧积木区-->
                         <DockPanel x:Name="CheeseDeleteZone" DockPanel.Dock="Right" Background="#ffd5a0" Width="300">
-                            <StackPanel Margin="10">
-                                <Button Content="加测试积木" Click="AddTestCheese_Click"/>
-                                <TextBlock Text="Cheese 模板" Margin="0,12,0,4" FontWeight="Bold" Foreground="#333"/>
-                                <ItemsControl ItemsSource="{x:Static local:CheeseTemplate.Display}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Background="Beige" BorderBrush="#888" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,3" Cursor="Hand" ToolTip="点击添加到画布" MouseLeftButtonUp="CheeseTemplateDisplay_Click">
-                                                <StackPanel>
-                                                    <TextBlock Text="{Binding Name}" FontWeight="Bold" Foreground="#222"/>
-                                                    <TextBlock FontSize="10" Foreground="#666">
-                                                        <TextBlock.Text>
-                                                            <MultiBinding StringFormat="{}Wait:{0}  Work:{1}  Out:{2}">
-                                                                <Binding Path="WaitType"/>
-                                                                <Binding Path="WorkType"/>
-                                                                <Binding Path="OutType"/>
-                                                            </MultiBinding>
-                                                        </TextBlock.Text>
-                                                    </TextBlock>
-                                                    <TextBlock FontSize="10" Foreground="#666" Text="{Binding Parameter.Count, StringFormat=参数 {0} 个}"/>
-                                                </StackPanel>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <TextBlock x:Name="CheeseDeleteHint" Text="拖到这里删除" Margin="0,12,0,0" HorizontalAlignment="Center" Foreground="#884444"/>
-                            </StackPanel>
+                            <TextBlock DockPanel.Dock="Bottom" x:Name="CheeseDeleteHint" Text="拖到这里删除" Margin="0,12,0,0" HorizontalAlignment="Center" Foreground="#884444"/>
+                            <ListBox x:Name="CheeseTemplateList" Margin="10" ScrollViewer.VerticalScrollBarVisibility="Auto" ItemTemplateSelector="{StaticResource CheeseTemplateItemTemplateSelector}"/>
                         </DockPanel>
                         <!--顶部操作区-->
                         <StackPanel DockPanel.Dock="Top" Height="32" Background="#ffbb00" Orientation="Horizontal">
@@ -579,6 +602,39 @@
                                 <Border x:Name="PortHoverHighlight" Width="16" Height="16" CornerRadius="3" Background="#40FFD700" BorderBrush="#FFFFD700" BorderThickness="2" Visibility="Collapsed" IsHitTestVisible="False"/>
                             </Canvas>
                         </Grid>
+                    </DockPanel>
+                    <DockPanel x:Name="LLMConfigPage" Visibility="Collapsed" Background="#F5F5F5">
+                        <TextBlock x:Name="LLMConfigTitle" DockPanel.Dock="Top" FontSize="18" FontWeight="Bold" Margin="10,8" Foreground="#222"/>
+                        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="10">
+                            <ComboBox x:Name="LLMConfigRolePicker" Width="120" SelectedIndex="0" SelectedValuePath="Content" VerticalAlignment="Center">
+                                <ComboBoxItem Content="system"/>
+                                <ComboBoxItem Content="user"/>
+                                <ComboBoxItem Content="assistant"/>
+                            </ComboBox>
+                            <Button Content="+" Width="32" Height="24" Margin="6,0,0,0" VerticalAlignment="Center" Click="LLMConfigAdd_Click"/>
+                        </StackPanel>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="LLMConfigList" Margin="10">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <ComboBox Grid.Column="0" SelectedValuePath="Content" SelectedValue="{Binding Role, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectionChanged="LLMConfigRole_SelectionChanged">
+                                                <ComboBoxItem Content="system"/>
+                                                <ComboBoxItem Content="user"/>
+                                                <ComboBoxItem Content="assistant"/>
+                                            </ComboBox>
+                                            <TextBox Grid.Column="1" MinHeight="40" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Text="{Binding Text, UpdateSourceTrigger=LostFocus}" PreviewKeyDown="LLMConfigMessage_KeyDown" LostFocus="LLMConfigText_LostFocus"/>
+                                            <Button Grid.Column="2" Content="删除" Width="44" Height="24" Margin="6,0,0,0" VerticalAlignment="Center" Click="LLMConfigRemove_Click"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
                     </DockPanel>
                 </Grid>
             </Border>

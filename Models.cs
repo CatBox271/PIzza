@@ -41,7 +41,7 @@ public class LastState
     }
 }
 
-public class BasicMessageItem
+public class BasicMessage
 {
     public string Text { get; set; } = "";
     public string Reasoning { get; set; } = "";
@@ -49,15 +49,15 @@ public class BasicMessageItem
     public List<ToolItem>? Tools { get; set; } = new();
 
     public int MessageIndex = -1;
-    public BasicMessageItem() { }
-    public BasicMessageItem(string role, string text, string reasoning = "")
+    public BasicMessage() { }
+    public BasicMessage(string role, string text, string reasoning = "")
     {
         Text = text;
         Role = role;
         Reasoning = reasoning;
     }
 
-    public BasicMessageItem(MonoMessage mono, int index)
+    public BasicMessage(MonoMessage mono, int index)
     {
         Role = mono.role;
         Text = mono.text ?? "";
