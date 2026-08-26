@@ -1,6 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using System.Windows.Input;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -81,8 +84,77 @@ public partial class MainWindow : Window
         Debug.WriteLine(error);
         _ = MessageLog(error);
     }
-    private void Button_Click(object sender, RoutedEventArgs e)
-    {
 
+    private void CheeseMoreButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not BaseCheese cheese) return;
+        
+        string sessionPath = cheese.Bread?.sessionPath ?? Last.SessionPath;
+        var sb = new StringBuilder();
+        sb.AppendLine("输入口内容：");
+        sb.AppendLine(BuildPortSummary(cheese.Input));
+        sb.AppendLine();
+        sb.AppendLine("输出口内容：");
+        sb.AppendLine(BuildPortSummary(cheese.Output));
+        sb.AppendLine();
+        sb.AppendLine("类型：");
+        sb.AppendLine($"Wait: {cheese.WaitType} | Work: {cheese.WorkType} | Out: {cheese.OutType}");
+        sb.AppendLine();
+        sb.AppendLine("Draft 内容：");
+        sb.AppendLine(BuildDraftSummary(cheese.WorkDraft));
+
+        string remark = "";
+        if (cheese.Parameter.TryGetValue("remark", out var remarkPara) && remarkPara?.Type == CheeseParaType.String)
+            remark = remarkPara.String ?? "";
+
+        string pageTitle = string.IsNullOrWhiteSpace(remark) ? cheese.Name + " 后台" : remark + " 后台";
+        OpenTextPage(sessionPath, pageTitle, sb.ToString());
+    }
+
+    private static string BuildPortSummary(CheesePortDictionary ports)
+    {
+        if (ports == null || ports.Count == 0) return "（无端口）";
+        var sb = new StringBuilder();
+        foreach (var kv in ports)
+        {
+            var cache = kv.Value?.Cache ?? new List<string>();
+            var cacheParts = new List<string>();
+            foreach (var item in cache) cacheParts.Add(PrettyJsonOrRaw(item));
+            sb.AppendLine($"{kv.Key}: {(cacheParts.Count == 0 ? "（空）" : string.Join(" | ", cacheParts))}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string BuildDraftSummary(Dictionary<string, List<string>> drafts)
+    {
+        if (drafts == null || drafts.Count == 0) return "（无 Draft）";
+        var sb = new StringBuilder();
+        foreach (var kv in drafts)
+        {
+            var list = kv.Value ?? new List<string>();
+            var listParts = new List<string>();
+            foreach (var item in list) listParts.Add(PrettyJsonOrRaw(item));
+            sb.AppendLine($"{kv.Key}: {(listParts.Count == 0 ? "（空）" : string.Join(" | ", listParts))}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string PrettyJsonOrRaw(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            };
+            return JsonSerializer.Serialize(doc.RootElement, options);
+        }
+        catch
+        {
+            return text;
+        }
     }
 }

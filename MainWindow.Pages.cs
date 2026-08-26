@@ -381,7 +381,7 @@ public partial class MainWindow
         var list = new List<string>();
         foreach (var item in LLMMessageUI)
         {
-            list.Add(JsonSerializer.Serialize(new BasicMessage(string.IsNullOrEmpty(item.Role) ? "user" : item.Role.ToLowerInvariant(), item.Text)));
+            list.Add(JsonSerializer.Serialize(new BasicMessage(string.IsNullOrEmpty(item.Role) ? "user" : item.Role.ToLowerInvariant(), item.Text), BaseCheese.ChineseJsonOptions));
         }
         LLMConfigCheese.WorkDraft["default"] = list;
         SaveCurrentPizzaGraph();

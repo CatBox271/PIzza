@@ -230,27 +230,35 @@
         <DataTemplate x:Key="BasicCheese">
             <DockPanel Background="Beige" MinWidth="150" HorizontalAlignment="Center" VerticalAlignment="Center" LastChildFill="True">
                 <!--名字（顶部作为拖拽区域）-->
-                <Border DockPanel.Dock="Top" Height="20" Background="#DDD" MouseLeftButtonDown="CheeseNameBar_MouseLeftButtonDown" MouseMove="CheeseNameBar_MouseMove" MouseLeftButtonUp="CheeseNameBar_MouseLeftButtonUp">
-                    <TextBox Text="{Binding Name}" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" IsReadOnly="True" IsHitTestVisible="False" Focusable="False"/>
+                <Border DockPanel.Dock="Top" Height="22" Background="#DDD" MouseLeftButtonDown="CheeseNameBar_MouseLeftButtonDown" MouseMove="CheeseNameBar_MouseMove" MouseLeftButtonUp="CheeseNameBar_MouseLeftButtonUp">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0" Text="{Binding Name}" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" IsReadOnly="True" IsHitTestVisible="False" Focusable="False"/>
+                        <Button Grid.Column="1" Content="..." Width="26" Height="18" Margin="2,1" Padding="0" FontSize="10" Cursor="Hand" Background="Transparent" BorderThickness="0" Foreground="#555" Click="CheeseMoreButton_Click"/>
+                    </Grid>
                 </Border>
+
                 <!--左侧Input：每个Key一个红口，Key显示在口右边（节点内部）-->
-                <ItemsControl DockPanel.Dock="Left" ItemsSource="{Binding Input}">
+                  <ItemsControl x:Name="InputPortsPanel" DockPanel.Dock="Left" ItemsSource="{Binding Input}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal">
-                                <Border Style="{StaticResource PortBorderStyle}" Background="Red" Tag="{Binding Key}" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}" MouseLeftButtonDown="InputPort_MouseLeftButtonDown" MouseMove="InputPort_MouseMove" MouseLeftButtonUp="InputPort_MouseLeftButtonUp"/>
+                                    <Border Style="{StaticResource PortBorderStyle}" Background="{Binding Value.color}" Tag="{Binding Key}" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}" MouseLeftButtonDown="InputPort_MouseLeftButtonDown" MouseMove="InputPort_MouseMove" MouseLeftButtonUp="InputPort_MouseLeftButtonUp"/>
                                 <TextBlock Text="{Binding Key}" FontSize="10" VerticalAlignment="Center" Margin="2,0" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}"/>
                             </StackPanel>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
                 <!--右侧Output：每个Key一个绿口，Key显示在口左边（节点内部）-->
-                <ItemsControl DockPanel.Dock="Right" ItemsSource="{Binding Output}">
+                  <ItemsControl x:Name="OutputPortsPanel" DockPanel.Dock="Right" ItemsSource="{Binding Output}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                 <TextBlock Text="{Binding Key}" FontSize="10" VerticalAlignment="Center" Margin="2,0" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}"/>
-                                <Border Style="{StaticResource PortBorderStyle}" Background="Green" Tag="{Binding Key}" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}" MouseLeftButtonDown="OutputPort_MouseLeftButtonDown" MouseMove="OutputPort_MouseMove" MouseLeftButtonUp="OutputPort_MouseLeftButtonUp"/>
+                                    <Border Style="{StaticResource PortBorderStyle}" Background="{Binding Value.color}" Tag="{Binding Key}" Visibility="{Binding Value.visiblity, Converter={StaticResource BoolToVis}}" MouseLeftButtonDown="OutputPort_MouseLeftButtonDown" MouseMove="OutputPort_MouseMove" MouseLeftButtonUp="OutputPort_MouseLeftButtonUp"/>
                             </StackPanel>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -260,6 +268,27 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Grid Margin="0,1" ToolTip="{Binding Description}">
+                              <Grid.Style>
+                                  <Style TargetType="Grid">
+                                      <Setter Property="Visibility" Value="Visible"/>
+                                      <Style.Triggers>
+                                          <MultiDataTrigger>
+                                              <MultiDataTrigger.Conditions>
+                                                  <Condition Binding="{Binding Name}" Value="滚动窗口大小"/>
+                                                  <Condition Binding="{Binding DataContext.Parameter[endurable].Bool, RelativeSource={RelativeSource AncestorType=ItemsControl}}" Value="False"/>
+                                              </MultiDataTrigger.Conditions>
+                                              <Setter Property="Visibility" Value="Collapsed"/>
+                                          </MultiDataTrigger>
+                                          <MultiDataTrigger>
+                                              <MultiDataTrigger.Conditions>
+                                                  <Condition Binding="{Binding Name}" Value="滚动阈值"/>
+                                                  <Condition Binding="{Binding DataContext.Parameter[endurable].Bool, RelativeSource={RelativeSource AncestorType=ItemsControl}}" Value="False"/>
+                                              </MultiDataTrigger.Conditions>
+                                              <Setter Property="Visibility" Value="Collapsed"/>
+                                          </MultiDataTrigger>
+                                      </Style.Triggers>
+                                  </Style>
+                              </Grid.Style>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
@@ -449,18 +478,20 @@
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid x:Name="Title" Width="100">
-                                <TextBlock Text="{Binding title}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="5">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="Black"/>
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding focus}" Value="true">
-                                                    <Setter Property="Foreground" Value="White"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
+                                <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Margin="5,5,5,5" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                                    <TextBlock Text="{Binding title}" FontSize="20" TextAlignment="Center" TextWrapping="NoWrap">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="Black"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding focus}" Value="true">
+                                                        <Setter Property="Foreground" Value="White"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Viewbox>
                                 <Button Width="20" Height="20" Background="White" Foreground="Black" Cursor="Hand" HorizontalAlignment="Right" VerticalAlignment="Top" Click="PageClose_Click">
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
@@ -560,10 +591,9 @@
                     <TextBox x:Name="TextPageView" Visibility="Collapsed" TextWrapping="Wrap" FontSize="20" Margin="10" Background="Transparent" BorderThickness="0" IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
                     <DockPanel x:Name="PIzzaPage" Visibility="Visible" >
                         <!--右侧积木区-->
-                        <DockPanel x:Name="CheeseDeleteZone" DockPanel.Dock="Right" Background="#ffd5a0" Width="300">
-                            <TextBlock DockPanel.Dock="Bottom" x:Name="CheeseDeleteHint" Text="拖到这里删除" Margin="0,12,0,0" HorizontalAlignment="Center" Foreground="#884444"/>
-                            <ListBox x:Name="CheeseTemplateList" Margin="10" ScrollViewer.VerticalScrollBarVisibility="Auto" ItemTemplateSelector="{StaticResource CheeseTemplateItemTemplateSelector}"/>
-                        </DockPanel>
+                        <Border x:Name="CheeseDeleteZone" DockPanel.Dock="Right" Background="#ffd5a0" Width="300">
+                            <ListBox x:Name="CheeseTemplateList" Margin="0" Background="Transparent" VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.VerticalScrollBarVisibility="Auto" ItemTemplateSelector="{StaticResource CheeseTemplateItemTemplateSelector}"/>
+                        </Border>
                         <!--顶部操作区-->
                         <StackPanel DockPanel.Dock="Top" Height="32" Background="#ffbb00" Orientation="Horizontal">
                             <Button Content="  重置  " Click="ResetPizzaGraph_Click" Margin="5,0"/>

@@ -10,6 +10,18 @@ using System.Threading.Tasks;
 
 namespace PiWpfUi
 {
+    public sealed class DeepseekChatResult
+    {
+        public string? Content { get; }
+        public string? Thinking { get; }
+
+        public DeepseekChatResult(string? content, string? thinking)
+        {
+            Content = content;
+            Thinking = thinking;
+        }
+    }
+
     public static class DeepseekRequest
     {
         public const string ApiKeyEnvVar = "DEEPSEEK_API_KEY";
@@ -47,9 +59,24 @@ namespace PiWpfUi
         }
 
         /// <summary>
-        /// 全局公开函数：发送一次非流式 chat/completions 请求，返回 assistant 文本。
+        /// 全局公开函数：发送一次非流式 chat/completions 请求，返回 assistant 正文。
         /// </summary>
         public static async Task<string?> ChatAsync(
+            string model,
+            IEnumerable<BasicMessage> messages,
+            bool? thinking = null,
+            string? reasoningEffort = null,
+            int? maxTokens = null,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await ChatDetailedAsync(model, messages, thinking, reasoningEffort, maxTokens, cancellationToken).ConfigureAwait(false);
+            return result.Content;
+        }
+
+        /// <summary>
+        /// 全局公开函数：发送一次非流式 chat/completions 请求，同时返回正文和思考内容。
+        /// </summary>
+        public static async Task<DeepseekChatResult> ChatDetailedAsync(
             string model,
             IEnumerable<BasicMessage> messages,
             bool? thinking = null,
@@ -103,15 +130,21 @@ namespace PiWpfUi
 
             using var doc = JsonDocument.Parse(respText);
             var root = doc.RootElement;
+            string? contentText = null;
+            string? thinkingText = null;
             if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
             {
                 var msg = choices[0].GetProperty("message");
+                if (msg.TryGetProperty("reasoning_content", out var rc) && rc.ValueKind == JsonValueKind.String)
+                {
+                    thinkingText = rc.GetString();
+                }
                 if (msg.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
                 {
-                    return c.GetString();
+                    contentText = c.GetString();
                 }
             }
-            return null;
+            return new DeepseekChatResult(contentText, thinkingText);
         }
     }
 }

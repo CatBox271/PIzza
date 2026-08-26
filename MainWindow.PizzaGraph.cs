@@ -155,6 +155,10 @@ namespace PiWpfUi
 
     public class BaseCheese : ObservableObject
     {
+        public static readonly JsonSerializerOptions ChineseJsonOptions = new()
+        {
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
         private string _name = "";
         public string Name { get => _name; set => SetProperty(ref _name, value); }
         private string _id = Guid.NewGuid().ToString("N")[..8];
@@ -493,6 +497,7 @@ namespace PiWpfUi
                     WorkType.Contains => WorkContains(),
                     WorkType.FileWriter => WorkFileWriter(),
                     WorkType.LLM=>WorkLLM(),
+                    WorkType.InputCombiner=> WorkInputCombiner(),
                     _ => false,
                 };
 
@@ -504,6 +509,32 @@ namespace PiWpfUi
             }
             return get_result;
         }
+
+        private bool WorkInputCombiner()
+        {
+            StringBuilder builder = new("接口");
+            List<string> final = new();
+            for (int i = 1; i <= Input.Count; i++)
+            {
+                string num = i.ToString();
+                builder.Append(num);
+                //直到【接口i】已经找不到
+                if (!Input.TryGetValue(builder.ToString(), out CheesePort? cheese_port)) break;
+                var cache = cheese_port!.Cache;
+                if (cache != null && cache.Count > 0) 
+                {
+                    final.AddRange(cache);
+                    PortClear(true, builder.ToString());
+                }
+                builder.Remove(builder.Length - num.Length, num.Length);
+            }
+            if (final.Count > 0)
+            {
+                PortAdd(false, "combined", final);
+                return true;
+            }
+            return false;
+        }
         private bool WorkLLM()
         {
             //根据WorkDraft里存的内容运行
@@ -511,7 +542,7 @@ namespace PiWpfUi
 
             if (GetTruePortCache(true, "reset", out List<string>? resets))
             {
-                if (resets!.Contains("true"))
+                if (resets!.Count > 0)
                 {
                     //重置
                     PortClear(true, "reset");
@@ -521,13 +552,17 @@ namespace PiWpfUi
 
             if (!GetTruePortCache(true, "text", out var texts) || texts!.Count == 0) return false;
 
-            string text = texts[0];
-            texts.RemoveAt(0);
             bool endurable = GetPara("endurable", CheeseParaType.Bool, out CheesePara? para) && (para!.Bool ?? false);
+            bool batchMode = GetPara("batch_mode", CheeseParaType.Bool, out CheesePara? batchPara) && (batchPara!.Bool ?? false);
+
+            string text;
+            //提取输入
+            if (batchMode) text = texts[0];
+            else text = string.Join("\n\n", texts);
 
             if (endurable)
             {
-                //一次只能跑一个 LLM 请求
+                // 长期化/分批模式下一次只跑一个 LLM 请求
                 if (_llmRunning) return false;
                 _llmRunning = true;
 
@@ -537,7 +572,18 @@ namespace PiWpfUi
                     if (!LLMLoad(default_work_key, ref messages)) messages.Clear();
                 }
                 messages.Add(new BasicMessage("user", text));
+
+                // 把用户输入也一起持久化到 messages 历史
+                var savedMessages = new List<string>();
+                foreach (var m in messages) savedMessages.Add(JsonSerializer.Serialize(m, BaseCheese.ChineseJsonOptions));
+                WorkDraft["messages"] = savedMessages;
+                MainWindow.Instance.SaveCurrentPizzaGraph();
+
                 _ = WorkStartLLMClient(messages);
+                //清理输入口
+                if (batchMode) texts.RemoveAt(0);
+                else texts.Clear();
+
                 return true;
             }
 
@@ -546,6 +592,10 @@ namespace PiWpfUi
             if (!LLMLoad(default_work_key, ref oneShot)) oneShot.Clear();
             oneShot.Add(new BasicMessage("user", text));
             _ = WorkStartLLMClient(oneShot);
+            //清理输入口
+            if (batchMode) texts.RemoveAt(0);
+            else texts.Clear();
+
             return true;
         }
         private bool LLMLoad(string key,ref List<BasicMessage> messages)
@@ -599,18 +649,30 @@ namespace PiWpfUi
                 if (GetPara("max_tokens", CheeseParaType.Int, out CheesePara? tokenPara) && tokenPara!.Int > 0)
                     maxTokens = tokenPara.Int;
 
-                string? content = await DeepseekRequest.ChatAsync(model, messages, thinking, reasoningEffort, maxTokens);
+                var llmResult = await DeepseekRequest.ChatDetailedAsync(model, messages, thinking, reasoningEffort, maxTokens);
+                string? content = llmResult.Content;
+                string? thinkingText = llmResult.Thinking;
 
                 if (!string.IsNullOrEmpty(content))
                 {
                     SetPort(false, "output", content);
+                }
 
-                    //endurable：把 assistant 结果追加到 messages 历史
-                    if (GetPara("endurable", CheeseParaType.Bool, out CheesePara? para) && (para!.Bool ?? false))
-                    {
-                        AddWorkDraft(JsonSerializer.Serialize(new BasicMessage("assistant", content)), "messages");
-                    }
+                //endurable：把 assistant 结果（含思考内容）追加到 messages 历史
+                if (GetPara("endurable", CheeseParaType.Bool, out CheesePara? para) && (para!.Bool ?? false))
+                {
+                    AddWorkDraft(JsonSerializer.Serialize(new BasicMessage("assistant", content ?? "", thinkingText ?? ""), BaseCheese.ChineseJsonOptions), "messages");
+                    MainWindow.Instance.SaveCurrentPizzaGraph();
+                    RollingTrimEndurable();
+                }
 
+                if (!string.IsNullOrEmpty(thinkingText))
+                {
+                    SetPort(false, "thinking", thinkingText);
+                }
+
+                if (!string.IsNullOrEmpty(content) || !string.IsNullOrEmpty(thinkingText))
+                {
                     DoOut();
                 }
             }
@@ -621,7 +683,84 @@ namespace PiWpfUi
             finally
             {
                 _llmRunning = false;
+
+                // 堆积分批：stream 完成后自动检查还有没有待处理的堆积项目，有就继续
+                if (GetPara("batch_mode", CheeseParaType.Bool, out CheesePara? batchPara) && (batchPara!.Bool ?? false))
+                {
+                    if (GetTruePortCache(true, "text", out var pending) && pending!.Count > 0)
+                    {
+                        try
+                        {
+                            WorkLLM();
+                        }
+                        catch (Exception ex)
+                        {
+                            MainWindow.LogError(ex.ToString());
+                        }
+                    }
+                }
             }
+        }
+
+        // 长期化滚动窗口：超过 窗口大小+阈值 时，一次性清理超出窗口大小的最旧消息
+        private void RollingTrimEndurable()
+        {
+            if (!GetWorkDraft(out var jsons, "messages") || jsons == null || jsons.Count == 0) return;
+
+            int windowSize = 10;
+            if (GetPara("rolling_window_size", CheeseParaType.Int, out CheesePara? windowPara) && windowPara!.Int > 0)
+                windowSize = windowPara.Int.Value;
+
+            int threshold = 5;
+            if (GetPara("rolling_threshold", CheeseParaType.Int, out CheesePara? thresholdPara) && thresholdPara!.Int > 0)
+                threshold = thresholdPara.Int.Value;
+
+            int nonSystemCount = 0;
+            foreach (var json in jsons)
+            {
+                try
+                {
+                    var msg = JsonSerializer.Deserialize<BasicMessage>(json);
+                    if (msg?.Role == null || !string.Equals(msg.Role, "system", StringComparison.OrdinalIgnoreCase))
+                        nonSystemCount++;
+                }
+                catch
+                {
+                    nonSystemCount++;
+                }
+            }
+
+            if (windowSize <= 0 || nonSystemCount < windowSize + threshold) return;
+
+            int removeCount = nonSystemCount - windowSize;
+            var removed = new List<string>();
+            var removedSet = new HashSet<string>();
+            foreach (var json in jsons)
+            {
+                if (removed.Count >= removeCount) break;
+                try
+                {
+                    var msg = JsonSerializer.Deserialize<BasicMessage>(json);
+                    if (msg?.Role != null && string.Equals(msg.Role, "system", StringComparison.OrdinalIgnoreCase))
+                        continue; // 系统消息永不抛弃
+                }
+                catch { }
+                removed.Add(json);
+                removedSet.Add(json);
+            }
+            var kept = new List<string>();
+            foreach (var json in jsons)
+            {
+                if (!removedSet.Contains(json)) kept.Add(json);
+            }
+            WorkDraft["messages"] = kept;
+
+            string discarded = string.Join("\n\n", removed);
+
+            SetPort(false, "滚动抛弃的内容", discarded);
+            MainWindow.Instance.SaveCurrentPizzaGraph();
+
+            if (!string.IsNullOrEmpty(discarded)) DoOut();
         }
         private bool WorkUserMessage()
         {
@@ -908,13 +1047,26 @@ namespace PiWpfUi
                 append = ap.Bool.Value;
             }
 
+            bool desktop = false;
+            if (Parameter.TryGetValue("desktop", out var dp) && dp?.Type == CheeseParaType.Bool && dp.Bool.HasValue)
+            {
+                desktop = dp.Bool.Value;
+            }
+
+            string targetPath = path.String!;
+            if (desktop)
+            {
+                string desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                targetPath = Path.IsPathRooted(targetPath) ? targetPath : Path.Combine(desktopDir, targetPath);
+            }
+
             try
             {
-                var dir = Path.GetDirectoryName(path.String);
+                var dir = Path.GetDirectoryName(targetPath);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-                if (append) File.AppendAllLines(path.String!, input!);
-                else File.WriteAllLines(path.String!, input!);
+                if (append) File.AppendAllLines(targetPath, input!);
+                else File.WriteAllLines(targetPath, input!);
 
                 PortClear(true, "input");
                 return true;
@@ -1240,10 +1392,12 @@ namespace PiWpfUi
             int delta = Input.Count - count;
             if (delta > 0)
             {
-                for (; delta > 0; delta--)
+                // 只删自动生成的接口N，不碰其它 para/手动口；删除前自动取消挂到该口的连接
+                var generated = Input.Keys.Where(k => System.Text.RegularExpressions.Regex.IsMatch(k, @"^接口\\d+$")).ToList();
+                for (int i = generated.Count - 1; i >= 0 && delta > 0; i--, delta--)
                 {
-                    string key = Input.Keys.ToList()[^1];
-                    CheesePort item = Input[key];
+                    string key = generated[i];
+                    MainWindow.Instance?.RemoveIncomingLinkPublic(this, key);
                     Input.Remove(key);
                 }
             }
@@ -1388,6 +1542,30 @@ namespace PiWpfUi
             {
                 MainWindow.Instance?.RemoveIncomingLinkPublic(this, "reset");
             }
+
+            // 长期化专用输出口：只有勾选上下文持久化才显示；取消时清掉从这些口出去的连接
+            foreach (var key in new[] { "滚动抛弃的内容" })
+            {
+                if (Output.TryGetValue(key, out var rollingPort))
+                {
+                    rollingPort.visiblity = endurable;
+                    if (!endurable && rollingPort.link?.Count > 0)
+                    {
+                        MainWindow.Instance?.RemoveOutgoingLinkPublic(this, key);
+                    }
+                }
+            }
+
+            // thinking 输出口：只有开启思考模式才显示；关闭时清掉从 thinking 口出去的连接
+            bool thinking = GetPara("thinking", CheeseParaType.Bool, out var thinkPara) && (thinkPara!.Bool ?? true);
+            if (Output.TryGetValue("thinking", out var thinkingPort))
+            {
+                thinkingPort.visiblity = thinking;
+                if (!thinking && thinkingPort.link?.Count > 0)
+                {
+                    MainWindow.Instance?.RemoveOutgoingLinkPublic(this, "thinking");
+                }
+            }
         }
         #endregion
 
@@ -1491,6 +1669,13 @@ namespace PiWpfUi
             Type = CheeseParaType.Bool,
             Bool = false,
         };
+        public readonly static CheesePara FileWriterDesktop = new()
+        {
+            Name = "桌面地址",
+            Description = "true 时将写入地址视为桌面下的路径；false 按原路径写入",
+            Type = CheeseParaType.Bool,
+            Bool = false,
+        };
 
         public readonly static CheesePara TextContent = new()
         {
@@ -1507,7 +1692,7 @@ namespace PiWpfUi
             Name = "模型",
             Description = "DeepSeek 模型名",
             Type = CheeseParaType.String,
-            String = "",
+            String = "deepseek-v4-flash",
         };
         public readonly static CheesePara LLMEndurable = new()
         {
@@ -1545,6 +1730,27 @@ namespace PiWpfUi
             Type = CheeseParaType.Int,
             Int = 4096,
         };
+        public readonly static CheesePara LLMBatchMode = new()
+        {
+            Name = "堆积分批",
+            Description = "true 一个一个处理堆积的项目，false 一次性合并为一个 string，用 \\n\\n 分割",
+            Type = CheeseParaType.Bool,
+            Bool = false,
+        };
+        public readonly static CheesePara LLMRollingWindowSize = new()
+        {
+            Name = "滚动窗口大小",
+            Description = "历史里至少保留多少条非系统消息（最小保留量）；滚动不包含 system，系统消息永不清理",
+            Type = CheeseParaType.Int,
+            Int = 10,
+        };
+        public readonly static CheesePara LLMRollingThreshold = new()
+        {
+            Name = "滚动阈值",
+            Description = "达到至少保留量后，又多积累超过多少条非系统消息时，一次性清理超出滚动窗口大小的部分；滚动不包含 system，系统消息永不清理",
+            Type = CheeseParaType.Int,
+            Int = 5,
+        };
 
 
 
@@ -1580,7 +1786,7 @@ namespace PiWpfUi
         };
         public readonly static BaseCheese InputCombiner = new() {
             Name = "输入合并器",
-            Output = new() { ["conbined"] = new CheesePort(true) },
+            Output = new() { ["combined"] = new CheesePort(false) },
             WaitType = WaitType.All,
             WorkType = WorkType.InputCombiner,
             OutType = OutType.Any,
@@ -1702,13 +1908,14 @@ namespace PiWpfUi
             {
                 ["path"] = CP(FileWriterPath),
                 ["append"] = CP(FileWriterAppend),
+                ["desktop"] = CP(FileWriterDesktop),
             }
         };
         public readonly static BaseCheese LLM = new()
         {
             Name = "LLM请求",
             Input = new() { ["text"] = new CheesePort(true), ["reset"] = new CheesePort(true) },
-            Output = new() { ["output"] = new CheesePort(true) },
+            Output = new() { ["output"] = new CheesePort(false), ["thinking"] = new CheesePort(false), ["滚动抛弃的内容"] = new CheesePort(false) { visiblity = false } },
             WaitType = WaitType.Any,
             WorkType = WorkType.LLM,
             OutType = OutType.Any,
@@ -1720,6 +1927,9 @@ namespace PiWpfUi
                 ["thinking"] = CP(LLMThinking),
                 ["reasoning_effort"] = CP(LLMReasoningEffort),
                 ["max_tokens"] = CP(LLMMaxTokens),
+                ["batch_mode"] = CP(LLMBatchMode),
+                ["rolling_window_size"] = CP(LLMRollingWindowSize),
+                ["rolling_threshold"] = CP(LLMRollingThreshold),
             }
         };
 
@@ -1910,17 +2120,19 @@ namespace PiWpfUi
                 if (!cheese.GetPortCache(false, port, out var cache)) continue;
 
                 var links = item.Value.link;
-                if (links == null || links.Count == 0) continue;
-
-                foreach (CheesePortLink link in links)
+                if (links != null)
                 {
-                    string CheeseId = link.TargetId;
-                    string PortId = link.TargetPort;
-                    if (string.IsNullOrEmpty(CheeseId) || string.IsNullOrEmpty(PortId)) continue;
-                    if (!FindCheese(CheeseId, out BaseCheese aim_cheese)) continue;
+                    foreach (CheesePortLink link in links)
+                    {
+                        string CheeseId = link.TargetId;
+                        string PortId = link.TargetPort;
+                        if (string.IsNullOrEmpty(CheeseId) || string.IsNullOrEmpty(PortId)) continue;
+                        if (!FindCheese(CheeseId, out BaseCheese aim_cheese)) continue;
 
-                    PortDelive(cheese, false, port, aim_cheese, true, PortId ,false);
+                        PortDelive(cheese, false, port, aim_cheese, true, PortId ,false);
+                    }
                 }
+                // 输出口即使没有挂载连接，DoOut 后也清空缓存
                 cheese.PortClear(false, port);
             }
         }
@@ -2032,6 +2244,7 @@ namespace PiWpfUi
             NormalizePizzaGraphs();
             EnsureLLMParameterDefaults();
             EnsureMessageDisplayDefaults();
+            EnsureFileWriterDefaults();
         }
 
         // 修复已加载的图：null 的 PizzaBread 补默认图
@@ -2046,6 +2259,7 @@ namespace PiWpfUi
             }
             if (changed) SavePizzaGraphs();
         }
+
 
 
         // 老 LLM 芝士补齐新增参数：备注/思考模式/思考强度/MaxToken
@@ -2078,12 +2292,67 @@ namespace PiWpfUi
                         cheese.Parameter["max_tokens"] = CheeseTemplate.CP(CheeseTemplate.LLMMaxTokens);
                         changed = true;
                     }
+                    if (!cheese.Output.ContainsKey("thinking"))
+                    {
+                          cheese.Output["thinking"] = new CheesePort(false);
+                        changed = true;
+                    }
+                      if (!cheese.Parameter.ContainsKey("batch_mode"))
+                      {
+                          cheese.Parameter["batch_mode"] = CheeseTemplate.CP(CheeseTemplate.LLMBatchMode);
+                          changed = true;
+                      }
+                      if (!cheese.Parameter.ContainsKey("rolling_window_size"))
+                      {
+                          cheese.Parameter["rolling_window_size"] = CheeseTemplate.CP(CheeseTemplate.LLMRollingWindowSize);
+                          changed = true;
+                      }
+                      if (!cheese.Parameter.ContainsKey("rolling_threshold"))
+                      {
+                          cheese.Parameter["rolling_threshold"] = CheeseTemplate.CP(CheeseTemplate.LLMRollingThreshold);
+                          changed = true;
+                      }
+                        if (cheese.Parameter.TryGetValue("rolling_window_size", out var rw) && rw != null && rw.Description != CheeseTemplate.LLMRollingWindowSize.Description)
+                        {
+                            rw.Description = CheeseTemplate.LLMRollingWindowSize.Description;
+                            changed = true;
+                        }
+                        if (cheese.Parameter.TryGetValue("rolling_threshold", out var rt) && rt != null && rt.Description != CheeseTemplate.LLMRollingThreshold.Description)
+                        {
+                            rt.Description = CheeseTemplate.LLMRollingThreshold.Description;
+                            changed = true;
+                        }
+                      if (!cheese.Output.ContainsKey("滚动抛弃的内容"))
+                      {
+                          cheese.Output["滚动抛弃的内容"] = new CheesePort(false) { visiblity = false };
+                          changed = true;
+                      }
                 }
             }
             if (changed) SavePizzaGraphs();
         }
 
         // 老 MessageDisplay 芝士补齐新增端口：用户输入
+        // 老 写入文件 芝士补齐新增参数：桌面地址
+        private void EnsureFileWriterDefaults()
+        {
+            bool changed = false;
+            foreach (var bread in PizzaGraphs.Values)
+            {
+                if (bread?.Cheeses == null) continue;
+                foreach (var cheese in bread.Cheeses)
+                {
+                    if (cheese.WorkType != WorkType.FileWriter) continue;
+                    if (!cheese.Parameter.ContainsKey("desktop"))
+                    {
+                        cheese.Parameter["desktop"] = CheeseTemplate.CP(CheeseTemplate.FileWriterDesktop);
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) SavePizzaGraphs();
+        }
+
         private void EnsureMessageDisplayDefaults()
         {
             bool changed = false;
@@ -2180,7 +2449,7 @@ namespace PiWpfUi
         }
 
         // 把当前 CheeseUI 写回当前 pizza 页所属 session，并落盘到该 session 文件夹
-        private void SaveCurrentPizzaGraph()
+        public void SaveCurrentPizzaGraph()
         {
             if (CurrentPage?.type != "pizza") return;
             string filePath = CurrentPage.sessionId ?? Last.SessionPath;
@@ -2340,13 +2609,13 @@ namespace PiWpfUi
             return FindPortInVisualTree(container, portKey, isOutput);
         }
 
-        private static Border? FindPortInVisualTree(DependencyObject root, string portKey, bool isOutput)
+        private Border? FindPortInVisualTree(DependencyObject root, string portKey, bool isOutput)
         {
             int count = VisualTreeHelper.GetChildrenCount(root);
             for (int i = 0; i < count; i++)
             {
                 var child = VisualTreeHelper.GetChild(root, i);
-                if (child is Border b && b.Tag is string key && key == portKey && IsPortColor(b, isOutput))
+                if (child is Border b && b.Tag is string key && key == portKey && IsInPortPanel(b, isOutput))
                 {
                     return b;
                 }
@@ -2356,11 +2625,20 @@ namespace PiWpfUi
             return null;
         }
 
-        private static bool IsPortColor(Border b, bool isOutput)
+        private bool IsInPortPanel(DependencyObject d, bool isOutput)
         {
-            var want = isOutput ? Colors.Green : Colors.Red;
-            return b.Background is SolidColorBrush brush && brush.Color == want;
+            for (var cur = d; cur != null; cur = VisualTreeHelper.GetParent(cur))
+            {
+                if (cur is ItemsControl ic)
+                {
+                    var dock = DockPanel.GetDock(ic);
+                    if (dock == Dock.Left) return !isOutput;
+                    if (dock == Dock.Right) return isOutput;
+                }
+            }
+            return false;
         }
+
 
         private static BaseCheese? FindVisualParentCheese(DependencyObject? d)
         {
@@ -2378,7 +2656,7 @@ namespace PiWpfUi
             {
                 for (var cur = d; cur != null; cur = VisualTreeHelper.GetParent(cur))
                 {
-                    if (cur is Border b && b.Tag is string && IsPortColor(b, isOutput)) return b;
+                    if (cur is Border b && b.Tag is string && IsInPortPanel(b, isOutput)) return b;
                 }
             }
             return null;
@@ -2549,6 +2827,13 @@ namespace PiWpfUi
             RefreshConnections();
         }
 
+        public void RemoveOutgoingLinkPublic(BaseCheese source, string sourcePort)
+        {
+            if (!source.Output.TryGetValue(sourcePort, out var port) || port?.link == null || port.link.Count == 0) return;
+            port.link.Clear();
+            RefreshConnections();
+        }
+
         private void AddLink(BaseCheese source, string sourcePort, BaseCheese target, string targetPort)
         {
             if (!source.Output.TryGetValue(sourcePort, out var port) || port == null)
@@ -2585,10 +2870,6 @@ namespace PiWpfUi
             CheeseDeleteZone.Background = inside
                 ? new SolidColorBrush(Color.FromRgb(0xFF, 0x8A, 0x8A))
                 : new SolidColorBrush(Color.FromRgb(0xFF, 0xD5, 0xA0));
-            CheeseDeleteHint.Text = inside ? "松开删除" : "拖到这里删除";
-            CheeseDeleteHint.Foreground = inside
-                ? Brushes.White
-                : new SolidColorBrush(Color.FromRgb(0x88, 0x44, 0x44));
         }
 
         private void RemoveLinksToCheese(BaseCheese removed)
@@ -2658,7 +2939,7 @@ namespace PiWpfUi
                 RemoveLinksToCheese(cheese);
                 RebuildConnections();
                 UpdateAllConnectionEndpoints();
-                SaveCurrentPizzaGraph();
+                MainWindow.Instance.SaveCurrentPizzaGraph();
                 return;
             }
 
